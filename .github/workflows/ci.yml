@@ -1,0 +1,89 @@
+name: CI
+
+# 只对「第一步：API」这部分做自动化 —— 本地 ComfyUI 那条路（第二步）依赖本机
+# 的 GPU 与数十 GB 模型文件，GitHub 的 runner 上没有，天然无法在这里验证。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 测试 (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 本项目零依赖，不需要 npm install —— 顺便验证这一点没被破坏
+      - name: 确认零依赖
+        run: |
+          grep -q '"dependencies": {}' package.json || { echo "::error::package.json 的 dependencies 不为空"; exit 1; }
+          test ! -d node_modules || { echo "::error::出现了 node_modules"; exit 1; }
+          echo "零依赖 ✓"
+
+      - name: 语法检查
+        run: |
+          for f in scripts/*.mjs src/*.mjs test/*.mjs; do
+            node --check "$f"
+          done
+          echo "全部通过 ✓"
+
+      - name: 单元测试
+        run: node --test
+
+      - name: CLI 冒烟测试（不需要 API Key）
+        run: |
+          node scripts/gen.mjs --help > /dev/null
+          node scripts/gen.mjs --models > /dev/null
+          node scripts/gen.mjs --ledger > /dev/null
+          node scripts/gen.mjs --prompt "a red apple" --ratio 1:1 --dry-run
+          echo "CLI 冒烟通过 ✓"
+
+      - name: 参数别名回归（--ar / --size 报错）
+        run: |
+          node scripts/gen.mjs --prompt "x" --ar 16:9 --dry-run | grep -q '16:9'
+          if node scripts/gen.mjs --prompt "x" --size 1024x1024 --dry-run 2>&1 | grep -q '只接受'; then
+            echo "像素值被正确拒绝 ✓"
+          else
+            echo "::error::--size 传像素值应当报错但没报"
+            exit 1
+          fi
+
+  secret-scan:
+    name: 密钥扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 扫描疑似 API Key（test/ 除外，那里有测试用假串）
+        run: |
+          set +e
+          hits=$(git grep -nEI 'sk-[A-Za-z0-9_-]{20,}' -- . ':(exclude)test/**' ':(exclude).github/**')
+          code=$?
+          if [ $code -eq 0 ]; then
+            echo "::error::发现疑似 API Key，请立即移除并轮换密钥"
+            echo "$hits"
+            exit 1
+          fi
+          echo "未发现疑似密钥 ✓"
+
+      - name: 确认 config.json 永远不会被提交
+        run: |
+          if git ls-files --error-unmatch config.json > /dev/null 2>&1; then
+            echo "::error::config.json 被 git 追踪了！真实密钥可能已泄露"
+            exit 1
+          fi
+          grep -q '^config.json$' .gitignore || { echo "::error::.gitignore 没有忽略 config.json"; exit 1; }
+          echo "config.json 未被追踪且已被忽略 ✓"

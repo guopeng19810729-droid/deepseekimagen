@@ -1,0 +1,14 @@
+{
+  "time": "2026-10-12T06:23:32.223Z",
+  "model": "a",
+  "ratio": "1:1",
+  "images": 1,
+  "cost_usd": 0.01,
+  "credits": null,
+  "task_id": "t1",
+  "file": "f1",
+  "format": "png",
+  "bytes": 1,
+  "prompt_sha1": "b78f576611ec",
+  "prompt": "p1"
+}

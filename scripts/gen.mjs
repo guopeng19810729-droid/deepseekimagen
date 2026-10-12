@@ -8,12 +8,14 @@
 // 原因：在 Windows 上带着未清理的 fetch/undici handle 调 process.exit() 会触发
 //       libuv 断言 "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)" 并崩溃。
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { loadConfig, requireApiKey, skillRoot } from '../src/config.mjs';
 import { Apimart, ApimartError } from '../src/apimart.mjs';
 import { DEFAULT_MODEL, MODELS, estimateUsd, isLocalAlternative, listModels, normalizeRatio, resolveModel } from '../src/models.mjs';
 import { record, summarize } from '../src/ledger.mjs';
-import { CliError, c, die, ensureDir, fmtUsd, imageSize, log, maskKey, parseArgs, sha256Buf, shortHash, slugify, tsCompact, warn } from '../src/util.mjs';
+import { CliError, c, die, ensureDir, fmtUsd, imageSize, log, maskKey, sha256Buf, shortHash, slugify, tsCompact, warn } from '../src/util.mjs';
+import { parseCliArgs } from '../src/args.mjs';
 
 main().then(
   (code) => { process.exitCode = code ?? 0; },
@@ -29,7 +31,7 @@ main().then(
 );
 
 async function main() {
-  const argv = parseArgs(process.argv.slice(2));
+  const argv = parseCliArgs(process.argv.slice(2));
 
   if (argv.help || argv.h) { printHelp(); return 0; }
 
@@ -194,10 +196,11 @@ async function doGenerate(argv, cfg) {
 
   process.stderr.write(`  提交 ${model} … `);
   let submitted;
+  const idem = randomUUID();   // 同一逻辑提交在重试时复用，降低重复扣费风险
   try {
     submitted = isMJ
-      ? await api.submitMidjourney({ model, prompt, ratio, version: argv.version })
-      : await api.submitImage({ model, prompt, ratio, n: images });
+      ? await api.submitMidjourney({ model, prompt, ratio, version: argv.version, idempotencyKey: idem })
+      : await api.submitImage({ model, prompt, ratio, n: images, idempotencyKey: idem });
   } catch (e) {
     process.stderr.write('\n');
     die(`提交失败：${e.message}`);
@@ -332,7 +335,7 @@ async function doAction(argv, cfg) {
   process.stderr.write(`  提交动作 ${action} … `);
   let submitted;
   try {
-    submitted = await api.submitAction(action, body);
+    submitted = await api.submitAction(action, body, { idempotencyKey: randomUUID() });
   } catch (e) {
     process.stderr.write('\n');
     die(`提交失败：${e.message}`);
@@ -455,6 +458,12 @@ function clientOpts(argv, cfg, apiKey) {
     pollIntervalMs: Number(cfg.poll_interval_ms) || 3000,
     pollTimeoutMs: Number(cfg.poll_timeout_ms) || 300000,
     verbose: Boolean(argv.verbose),
+    retries: argv['no-retry'] ? 0 : Number(cfg.retries ?? 3),
+    retryBaseMs: Number(cfg.retry_base_ms) || 600,
+    retryMaxMs: Number(cfg.retry_max_ms) || 8000,
+    onRetry: ({ attempt, delay, error, method, path }) => {
+      warn(`请求失败（${method} ${path ? String(path).slice(0, 80) : ''}）：${error?.message || error}；${Math.round(delay)}ms 后进行第 ${attempt} 次重试`);
+    },
   };
 }
 
@@ -497,9 +506,12 @@ ${c.bold('用法')}
 ${c.bold('常用选项')}
   --model <id>      指定模型（默认取 config.default_model；说"生图"就用默认）
   --ratio <比例>    1:1 / 16:9 / 9:16 / 4:3 / 3:4 ... 也接受 方图/横图/竖图
+                    别名：--ar / --aspect / --aspect-ratio；--size 9:16 亦可
+                    （--size 1024x1024 这类像素值会明确报错，平台只认比例）
   --out <目录>      覆盖输出目录
   --images <n>      张数（Midjourney 固定 4 张，忽略此参数）
-  --version <v>     Midjourney 版本（如 6.1 / 7）
+  --version <v>     Midjourney 版本（如 6.1 / 7 / 8.2）
+  --no-retry        关闭网络重试（默认 GET 重试全部可重试错误，POST 只重试"确定未送达"的错误）
   --dry-run         只预演，不提交、不花钱
   --force           跳过单次费用上限保护
   --json            以 JSON 输出结果（便于程序解析）

@@ -28,12 +28,18 @@ node <skill-base-dir>/scripts/gen.mjs --check
 # 1) 把提示词写成 UTF-8 文件（避免命令行编码问题）
 #    用你手边的写文件能力写 ./prompt.txt
 
-# 2) 出图
+# 2) 出图（--ratio 也可写成 --ar / --aspect，与 Midjourney 写法一致）
 node <skill-base-dir>/scripts/gen.mjs --prompt-file ./prompt.txt --ratio 1:1
 
 # 中文/复杂场景也建议加 --json，便于你解析结果
-node <skill-base-dir>/scripts/gen.mjs --prompt-file ./prompt.txt --ratio 16:9 --json
+node <skill-base-dir>/scripts/gen.mjs --prompt-file ./prompt.txt --ar 16:9 --json
 ```
+
+⚠️ **尺寸只能传比例**。传 `1024x1024` 这类像素值会被拒绝（脚本会直接给出明确报错）。
+
+网络请求会自动重试：GET 全部可重试错误都重试；**POST 只重试"确定未送达"的错误**
+（连接被拒 / 域名解析失败 / 连接超时）与 429 —— 请求超时与连接重置**不重试**，
+因为请求可能已被处理、重试有重复扣费风险。需要时可加 `--no-retry`。
 
 `--json` 输出形如：
 

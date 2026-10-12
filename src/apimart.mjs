@@ -3,76 +3,117 @@
 //   提交后轮询 GET /tasks/{id}      → data.result.images[0].url = URL 数组
 //   MJ：  POST /midjourney/generations → 同上，但一次出 4 张
 // 零依赖：只用 Node 内置 fetch（>=18）。需要代理时由 config.mjs 设置 NODE_USE_ENV_PROXY。
-import { detectFormat, sleep, c } from './util.mjs';
+//
+// 重试策略（重要，别改坏）：
+//   GET   —— 幂等，任何网络错误、429、5xx 都可重试
+//   POST  —— 非幂等，可能产生费用！只在「确定没送达」的错误上重试：
+//            ECONNREFUSED / ENOTFOUND / EAI_AGAIN / ENETUNREACH / UND_ERR_CONNECT_TIMEOUT
+//            以及 429（服务端明确表示未处理）
+//            **不重试** UND_ERR_HEADERS_TIMEOUT / UND_ERR_BODY_TIMEOUT / ECONNRESET —— 请求可能已被处理，
+//            重试有重复扣费风险。宁可让用户看到失败后自行决定。
+import { detectFormat, sleep } from './util.mjs';
 
 const DONE = new Set(['completed', 'succeeded', 'success']);
 const FAIL = new Set(['failed', 'error', 'cancelled', 'canceled']);
 
+/** 这些错误码意味着请求「肯定没有到达/没有被处理」，POST 重试是安全的 */
+const SAFE_CONNECT_CODES = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT',
+]);
+
 export class ApimartError extends Error {
   constructor(message, { status, body } = {}) {
     super(message);
+    this.name = 'ApimartError';
     this.status = status;
     this.body = body;
   }
 }
 
 export class Apimart {
-  constructor({ apiKey, baseUrl, pollIntervalMs = 3000, pollTimeoutMs = 300000, verbose = false }) {
+  constructor({
+    apiKey,
+    baseUrl,
+    pollIntervalMs = 3000,
+    pollTimeoutMs = 300000,
+    verbose = false,
+    retries = 3,
+    retryBaseMs = 600,
+    retryMaxMs = 8000,
+    onRetry = null,
+  }) {
     this.apiKey = apiKey;
     this.baseUrl = String(baseUrl).replace(/\/+$/, '');
     this.pollIntervalMs = pollIntervalMs;
     this.pollTimeoutMs = pollTimeoutMs;
     this.verbose = verbose;
+    this.retries = Math.max(0, Number(retries) || 0);
+    this.retryBaseMs = Number(retryBaseMs) || 600;
+    this.retryMaxMs = Number(retryMaxMs) || 8000;
+    this.onRetry = onRetry;
   }
 
-  async #req(path, { method = 'GET', body, timeoutMs = 120000 } = {}) {
+  /** 单次请求，不做重试 */
+  async #once(path, { method = 'GET', body, timeoutMs = 120000, idempotencyKey } = {}) {
     const url = `${this.baseUrl}${path}`;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch(url, {
-        method,
-        signal: ctrl.signal,
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          ...(body ? { 'Content-Type': 'application/json; charset=utf-8' } : {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
+      const headers = {
+        Authorization: `Bearer ${this.apiKey}`,
+        ...(body ? { 'Content-Type': 'application/json; charset=utf-8' } : {}),
+        // 平台是否支持该头未经验证；发送无害，一旦支持即可让重试变得安全
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+      };
+      const res = await fetch(url, { method, signal: ctrl.signal, headers, body: body ? JSON.stringify(body) : undefined });
       const text = await res.text();
       let json = null;
-      try { json = text ? JSON.parse(text) : null; } catch { /* 非 JSON */ }
+      try { json = text ? JSON.parse(text) : null; } catch { /* 非 JSON 响应 */ }
       if (!res.ok) {
         const msg = json?.error?.message || json?.message || text?.slice(0, 300) || res.statusText;
         throw new ApimartError(`HTTP ${res.status}: ${msg}`, { status: res.status, body: json ?? text });
       }
       return json;
+    } catch (e) {
+      if (e?.name === 'AbortError') {
+        const err = new ApimartError(`请求超时（${timeoutMs}ms）：${method} ${path}`);
+        err.code = 'UND_ERR_HEADERS_TIMEOUT';
+        throw err;
+      }
+      throw e;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  /** 提交图像任务。size 传比例；模型不支持 size 时自动省略。 */
-  async submitImage({ model, prompt, ratio, n = 1 }) {
-    const body = { model, prompt, n };
-    if (ratio) body.size = ratio;
-    const json = await this.#req('/images/generations', { method: 'POST', body });
-    const item = json?.data?.[0] || json?.data || json;
-    const taskId = item?.task_id || item?.id;
-    if (!taskId) throw new ApimartError(`提交后没拿到 task_id，原始响应：${JSON.stringify(json).slice(0, 300)}`);
-    return { taskId, raw: json };
+  /** 该错误是否可重试 */
+  #shouldRetry(e, isWrite) {
+    if (e instanceof ApimartError && e.status != null) {
+      if (e.status === 429) return true;              // 限流：服务端明确未处理
+      if (e.status >= 500) return !isWrite;           // 写操作 5xx 结果不明，不重试
+      return false;
+    }
+    const code = e?.cause?.code || e?.code;
+    if (code && SAFE_CONNECT_CODES.has(code)) return true;
+    if (isWrite) return false;                        // 其余网络错误对写操作一律不重试
+    return true;
   }
 
-  /** 提交 Midjourney imagine 任务（专用端点，不需要 model 字段，但传了也不报错） */
-  async submitMidjourney({ model = 'midjourney', prompt, ratio, version }) {
-    const body = { model, prompt };
-    if (ratio) body.size = ratio;
-    if (version) body.version = version;
-    const json = await this.#req('/midjourney/generations', { method: 'POST', body });
-    const item = json?.data?.[0] || json?.data || json;
-    const taskId = item?.task_id || item?.id;
-    if (!taskId) throw new ApimartError(`提交后没拿到 task_id，原始响应：${JSON.stringify(json).slice(0, 300)}`);
-    return { taskId, raw: json };
+  async #req(path, opts = {}) {
+    const isWrite = (opts.method ?? 'GET') !== 'GET';
+    let lastErr;
+    for (let attempt = 1; attempt <= this.retries + 1; attempt++) {
+      try {
+        return await this.#once(path, opts);
+      } catch (e) {
+        lastErr = e;
+        if (attempt > this.retries || !this.#shouldRetry(e, isWrite)) throw e;
+        const delay = Math.min(this.retryMaxMs, this.retryBaseMs * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
+        if (this.onRetry) this.onRetry({ attempt, delay, error: e, path, method: opts.method ?? 'GET' });
+        await sleep(delay);
+      }
+    }
+    throw lastErr;
   }
 
   /** 连通性 + 鉴权探测：GET /models 需要有效 Bearer */
@@ -80,17 +121,34 @@ export class Apimart {
     return this.#req('/models');
   }
 
+  /** 提交图像任务。size 传比例；模型不支持 size 时自动省略。 */
+  async submitImage({ model, prompt, ratio, n = 1, idempotencyKey }) {
+    const body = { model, prompt, n };
+    if (ratio) body.size = ratio;
+    const json = await this.#req('/images/generations', { method: 'POST', body, idempotencyKey });
+    return { taskId: taskIdOf(json), raw: json };
+  }
+
+  /** 提交 Midjourney imagine 任务（专用端点，不需要 model 字段，但传了也不报错） */
+  async submitMidjourney({ model = 'midjourney', prompt, ratio, version, idempotencyKey }) {
+    const body = { model, prompt };
+    if (ratio) body.size = ratio;
+    if (version) body.version = version;
+    const json = await this.#req('/midjourney/generations', { method: 'POST', body, idempotencyKey });
+    return { taskId: taskIdOf(json), raw: json };
+  }
+
   /**
    * 提交 Midjourney 后续动作。
    * action: upscale | variation | high-variation | low-variation | reroll
    *         | zoom | pan | inpaint | modal | edits | blend | describe | remix-strong | remix-subtle | video
-   * body:   至少含 task_id；按动作补 index / direction / zoom_ratio / custom_id / prompt / image_url(s) 等
    */
-  async submitAction(action, body) {
-    const json = await this.#req(`/midjourney/generations/${encodeURIComponent(action)}`, { method: 'POST', body });
-    const item = json?.data?.[0] || json?.data || json;
-    const taskId = item?.task_id || item?.id;
-    if (!taskId) throw new ApimartError(`动作 ${action} 提交后没拿到 task_id：${JSON.stringify(json).slice(0, 300)}`);
+  async submitAction(action, body, { idempotencyKey } = {}) {
+    const json = await this.#req(`/midjourney/generations/${encodeURIComponent(action)}`, { method: 'POST', body, idempotencyKey });
+    let taskId;
+    try { taskId = taskIdOf(json); } catch {
+      throw new ApimartError(`动作 ${action} 提交后没拿到 task_id：${JSON.stringify(json).slice(0, 300)}`);
+    }
     return { taskId, raw: json };
   }
 
@@ -128,17 +186,11 @@ export class Apimart {
       const status = d?.status ?? 'unknown';
       if (onTick) onTick({ status, progress: d?.progress, elapsedMs: Date.now() - t0 });
       else if (this.verbose) {
-        process.stderr.write(`\r  ${c.dim(`状态 ${status} 进度 ${d?.progress ?? '?'} ${Math.round((Date.now() - t0) / 1000)}s`)}   `);
+        process.stderr.write(`\r  ${`状态 ${status} 进度 ${d?.progress ?? '?'} ${Math.round((Date.now() - t0) / 1000)}s`}   `);
       }
 
-      if (DONE.has(status)) {
-        if (!this.verbose && !onTick) process.stderr.write('\r' + ' '.repeat(60) + '\r');
-        return { status, cost: d?.cost ?? null, credits: d?.credits_cost ?? null, urls: extractUrls(d), data: d };
-      }
-      if (FAIL.has(status)) {
-        if (!this.verbose && !onTick) process.stderr.write('\r' + ' '.repeat(60) + '\r');
-        return { status, cost: d?.cost ?? 0, urls: [], data: d };
-      }
+      if (DONE.has(status)) return { status, cost: d?.cost ?? null, credits: d?.credits_cost ?? null, urls: extractUrls(d), data: d };
+      if (FAIL.has(status)) return { status, cost: d?.cost ?? 0, credits: d?.credits_cost ?? null, urls: [], data: d };
       if (Date.now() - t0 > this.pollTimeoutMs) {
         throw new ApimartError(`轮询超时（${this.pollTimeoutMs}ms），task_id=${taskId} 仍在 ${status}`);
       }
@@ -148,17 +200,39 @@ export class Apimart {
 
   /** 下载并返回 { buf, format } —— 扩展名不可信，格式按魔数判定 */
   async download(url) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 180000);
-    try {
-      const res = await fetch(url, { signal: ctrl.signal });
-      if (!res.ok) throw new ApimartError(`下载失败 HTTP ${res.status}: ${url}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      return { buf, format: detectFormat(buf) };
-    } finally {
-      clearTimeout(timer);
+    let lastErr;
+    for (let attempt = 1; attempt <= this.retries + 1; attempt++) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 180000);
+      try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) {
+          const err = new ApimartError(`下载失败 HTTP ${res.status}: ${url}`, { status: res.status });
+          if (res.status < 500 && res.status !== 429) throw err;
+          lastErr = err;
+        } else {
+          const buf = Buffer.from(await res.arrayBuffer());
+          return { buf, format: detectFormat(buf) };
+        }
+      } catch (e) {
+        lastErr = e?.name === 'AbortError' ? new ApimartError(`下载超时: ${url}`) : e;
+      } finally {
+        clearTimeout(timer);
+      }
+      if (attempt > this.retries) break;
+      const delay = Math.min(this.retryMaxMs, this.retryBaseMs * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
+      if (this.onRetry) this.onRetry({ attempt, delay, error: lastErr, path: url, method: 'DOWNLOAD' });
+      await sleep(delay);
     }
+    throw lastErr;
   }
+}
+
+function taskIdOf(json) {
+  const item = json?.data?.[0] || json?.data || json;
+  const id = item?.task_id || item?.id;
+  if (!id) throw new ApimartError(`提交后没拿到 task_id，原始响应：${JSON.stringify(json).slice(0, 300)}`);
+  return id;
 }
 
 /** 从任务 data 里递归收集所有图片 URL（普通模型 1 个、MJ 4 个） */

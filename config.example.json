@@ -21,5 +21,10 @@
   "max_cost_usd_per_request": 0.3,
 
   "poll_interval_ms": 3000,
-  "poll_timeout_ms": 300000
+  "poll_timeout_ms": 300000,
+
+  "_重试说明": "GET 幂等请求遇到网络错误/429/5xx 会自动重试（指数退避+抖动）。POST 有扣费风险，只在『确定没送达』的错误上重试（连接被拒/域名解析失败/连接超时）与 429；请求超时与连接重置不重试，避免重复扣费。命令加 --no-retry 可关闭。",
+  "retries": 3,
+  "retry_base_ms": 600,
+  "retry_max_ms": 8000
 }

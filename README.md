@@ -3,6 +3,10 @@
 用 [APIMart](https://apib.ai)（apib.ai）聚合 API **生图**的命令行工具，同时是一个可直接挂给 AI Agent 的 **Skill**。
 零依赖（只用 Node 内置模块），自动落盘、自动记账。
 
+[![CI](https://github.com/guopeng19810729-droid/deepseekimagen/actions/workflows/ci.yml/badge.svg)](https://github.com/guopeng19810729-droid/deepseekimagen/actions/workflows/ci.yml)
+![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
+![node](https://img.shields.io/badge/node-%3E%3D18-blue)
+
 ```bash
 node scripts/gen.mjs --prompt-file prompt.txt --ratio 1:1
 # → F:\deepseekimagen\2026-10-12\20261012-113710-一只戴眼镜的橘猫-c917cb-01.png
@@ -107,13 +111,28 @@ dimg --check | --models | --ledger [--tail N]
 |---|---|
 | `--model <id>` | 指定模型（默认取 `config.default_model`） |
 | `--ratio <比例>` | `1:1` / `16:9` / `9:16` …，也接受 `方图/横图/竖图` |
+| `--ar` / `--aspect` / `--aspect-ratio` | `--ratio` 的别名（`--ar 9:16` 与 Midjourney 写法一致） |
+| `--size <比例>` | 也可用；但 `--size 1024x1024` 这类**像素值会明确报错**（平台只认比例） |
 | `--out <目录>` | 覆盖输出目录 |
 | `--images <n>` | 张数（Midjourney 固定 4 张，忽略此项） |
-| `--version <v>` | Midjourney 版本（如 `6.1` / `7`） |
+| `--version <v>` | Midjourney 版本（如 `6.1` / `7` / `8.2`） |
+| `--no-retry` | 关闭网络重试（默认 GET 重试全部可重试错误；POST 只重试"确定未送达"的错误） |
 | `--dry-run` | 只预演：打印模型/比例/张数/预估费用，**不提交、不花钱** |
 | `--force` | 跳过单次费用上限保护 |
 | `--json` | 以 JSON 输出结果 |
 | `--config <路径>` | 指定配置文件 |
+
+### 网络重试策略（重要）
+
+判断依据是**「重试会不会造成重复扣费」**：
+
+| 请求类型 | 重试范围 |
+|---|---|
+| `GET`（查任务、查模型，幂等） | 网络错误、429、5xx **全部重试**，指数退避 + 抖动 |
+| **`POST`（提交生成，会产生费用）** | **只重试"确定没送达"的错误**：`ECONNREFUSED` / `ENOTFOUND` / `EAI_AGAIN` / `ENETUNREACH` / 连接超时，以及 `429`（服务端明确未处理）。**`UND_ERR_HEADERS_TIMEOUT` / `UND_ERR_BODY_TIMEOUT` / `ECONNRESET` 一律不重试** —— 请求可能已被处理，重试有重复扣费风险 |
+
+提交时会附带一个 `Idempotency-Key` 头（同一逻辑提交在重试间复用）。平台是否支持该头尚未验证，
+但发送无害，且一旦支持即可让重试变得安全。用 `--no-retry` 可完全关闭。
 
 ---
 
@@ -175,6 +194,29 @@ node scripts/gen.mjs --ledger --tail 5
   若你的网络确实需要代理，填 `http://127.0.0.1:7890` 之类；脚本会用 `NODE_USE_ENV_PROXY` 生效（需 Node ≥ 24）。
 - 环境变量优先级高于配置文件：`APIMART_API_KEY` / `APIMART_BASE_URL` / `APIMART_PROXY` /
   `DEEPSEEKIMAGEN_OUTPUT` / `DEEPSEEKIMAGEN_LEDGER`
+
+---
+
+## 测试与 CI
+
+```bash
+node --test      # 52 个测试，零依赖，约 1.5 秒
+npm run lint     # 语法检查
+```
+
+覆盖的关键行为：
+
+- **重试策略**：写操作「哪些错误能重试、哪些不能」用测试钉死 —— 这直接关系到会不会重复扣费
+- **参数别名与友好报错**：`--ar` 归一、`--size` 传像素必须报错
+- **图片格式与尺寸**：PNG / JPEG / WebP 的魔数与宽高解析（不依赖任何图像库）
+- **台账**：CSV 转义（提示词含逗号/引号/换行）、失败任务留痕、按模型汇总
+- **配置**：文件 → 环境变量覆盖、相对路径解析、代理开关、缺 Key 时的友好报错
+
+`.github/workflows/ci.yml` 在每次 push 时跑：Node 20/22/24 三档测试、语法检查、CLI 冒烟、
+参数别名回归、**密钥扫描**（含「`config.json` 绝不被追踪」的硬校验）。
+
+> 说明：CI 只覆盖**第一步（API）**。本地 ComfyUI 那条路依赖本机 GPU 与数十 GB 模型文件，
+> GitHub 的 runner 上没有，天然无法在那里验证。
 
 ---
 

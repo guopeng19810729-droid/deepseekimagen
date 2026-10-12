@@ -84,7 +84,8 @@ export function imageSize(buf) {
     if (fmt === 'png') return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
     if (fmt === 'jpg') {
       let i = 2;
-      while (i < b.length - 9) {
+      // 需要能读到 i..i+8（marker 2 字节 + 段长 2 字节 + 精度 1 字节 + 高 2 字节 + 宽 2 字节）
+      while (i + 9 <= b.length) {
         if (b[i] !== 0xff) { i++; continue; }
         const marker = b[i + 1];
         const len = b.readUInt16BE(i + 2);
@@ -92,7 +93,7 @@ export function imageSize(buf) {
         if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
           return { w: b.readUInt16BE(i + 7), h: b.readUInt16BE(i + 5) };
         }
-        i += 2 + len;
+        i += 2 + (len > 0 ? len : 2);
       }
       return { w: null, h: null };
     }

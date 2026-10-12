@@ -23,6 +23,9 @@ export const DEFAULTS = {
   max_cost_usd_per_request: 0.3,
   poll_interval_ms: 3000,
   poll_timeout_ms: 300000,
+  retries: 3,
+  retry_base_ms: 600,
+  retry_max_ms: 8000,
 };
 
 /** 候选配置文件，按顺序找，先找到的胜出 */

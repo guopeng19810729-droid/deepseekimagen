@@ -11,9 +11,11 @@
     "node": ">=18"
   },
   "scripts": {
+    "test": "node --test",
     "check": "node scripts/gen.mjs --check",
     "models": "node scripts/gen.mjs --models",
-    "ledger": "node scripts/gen.mjs --ledger"
+    "ledger": "node scripts/gen.mjs --ledger",
+    "lint": "node --check scripts/gen.mjs && node --check src/*.mjs"
   },
   "keywords": [
     "image-generation",
