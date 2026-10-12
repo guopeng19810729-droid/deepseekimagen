@@ -111,7 +111,39 @@
 
 ---
 
-## 五、平台侧的两个坑
+## 五、Midjourney 的后续动作端点（完整清单）
+
+`POST /v1/midjourney/generations/<action>`，全部异步任务制，各自独立计费
+（计费键形如 `midjourney@<action>[-version][-speed]`）。
+
+| 动作 | 路径 | 关键参数 |
+|---|---|---|
+| Imagine（出图） | `/generations` | `prompt`（可带原生 MJ 参数）、`size`（比例）、`version` |
+| Blend（多图融合） | `/generations/blend` | 多张 `image_urls` |
+| Describe（图生文） | `/generations/describe` | `image_url` |
+| Edits（图像编辑） | `/generations/edits` | `image_url` + `prompt` |
+| Upscale | `/generations/upscale` | `task_id` + `index`（1-4）或 `custom_id` |
+| Variation | `/generations/variation` | `task_id` + `index` |
+| High / Low Variation | `/generations/high-variation` · `/low-variation` | 同上 |
+| Reroll（重跑） | `/generations/reroll` | `task_id` |
+| Zoom out | `/generations/zoom` | `task_id` + `zoom_ratio` |
+| Pan（平移扩图） | `/generations/pan` | `task_id` + `direction` |
+| **Inpaint（局部重绘）** | `/generations/inpaint` | 进入 `MODAL` 状态，再用 `/modal` 提交蒙版 + 提示词 |
+| Modal | `/generations/modal` | `mask` + `prompt` |
+| Remix strong / subtle | `/generations/remix-strong` · `/remix-subtle` | 仅 v8.1 / v8.2 |
+| Image-to-video | `/generations/video` | 按 `batch_size` 计费 |
+
+**按钮 → 参数映射**：`GET /v1/midjourney/{task_id}` 返回 `buttons[].customId`
+（形如 `MJ::JOB::upsample::4::6acc604e...`）。后续动作可以传 `index` / `direction` / `zoom_ratio`
+让服务自动匹配，匹配失败时直接传 `custom_id`。
+
+⚠️ **已实测：`upscale` 是收费空操作**（返回原图、SHA256 不变、照扣 $0.05504）——
+详见 [`TROUBLESHOOTING.md` 第三节第 9 条](TROUBLESHOOTING.md#9-️-midjourney-的-upscale-是收费空操作实测-2-次共-011008)。
+其余动作尚未实测，用前建议做「输出 vs 输入」的哈希比对。
+
+---
+
+## 六、平台侧的两个坑
 
 1. **部分模型没开价**：`gemini-2.5-flash-image-preview` 返回
    `model_price_error: ratio or price is not configured`。

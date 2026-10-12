@@ -93,6 +93,48 @@ GIF  47 49 46 38
 例如 `prompt` 为空 → `400 {"error":{"message":"`prompt` parameter is required..."}}`，
 **这类请求不扣费**。所以可以用「故意缺参数的探针」来验证端点存在性而不用花钱。
 
+### 9. ⚠️ Midjourney 的 `upscale` 是**收费空操作**（实测 2 次，共 $0.11008）
+
+**现象**：调用 `POST /v1/midjourney/generations/upscale` 放大第 4 张切片，
+平台返回 `action=UPSCALE`、`status=SUCCESS`、新 task_id、新 URL，并**正常扣费 $0.05504** ——
+但下载回来的文件与原图**逐字节完全相同**（SHA256 一致），分辨率也没变。
+
+**实测记录（2026-10-12，MJ imagine v8.2，9:16）**：
+
+| 调用方式 | 参数 | 结果 | 扣费 | 与原图对比 |
+|---|---|---|---|---|
+| 自动匹配 | `{"task_id":"task_...","index":4}` | SUCCESS | $0.05504 | **SHA256 相同，816×1456 未变** |
+| 显式指定 | `{"task_id":"task_...","custom_id":"MJ::JOB::upsample::4::6acc604e...}` | SUCCESS | $0.05504 | **SHA256 相同，816×1456 未变** |
+
+原图 SHA256：`1D4F752F799014A0EAAB46D9C001AA32ADAAD816DFD5EDC582782E3795E9AC72`
+两种方式返回的文件 SHA256 与之完全一致。
+
+**排除了「参数用错」这个可能**：`index` 的自动匹配显然是成功的（它确实定位到了第 4 张，
+否则应该报错或返回别的切片），而文档建议的 `custom_id` 兜底方式给出**完全相同**的结果。
+
+**结论**：provider 端的 upscale 动作对这个任务没有实际执行，但照常计费。
+
+**建议**：
+
+* 需要放大时**优先用本地放大器**（Real-ESRGAN / 4x-UltraSharp 等，通常比 MJ 自带 upscale 更能补细节），
+  或先 `--dry-run` 确认预算再试。
+* 这条**不代表所有 MJ 版本都如此** —— 我只在 v8.2 的 9:16 imagine 上验证过。
+  若要用，建议先用一张便宜的 imagine 试一次并做 SHA256 比对（见下方校验脚本）。
+* 也**不代表其他后续动作同样失效** —— `variation` / `reroll` / `zoom` / `pan` / `inpaint`
+  我尚未实测，用之前建议按同样方法验证。
+
+**如何自行校验**（不要只看 HTTP 200 / status=SUCCESS）：
+
+```bash
+# 下载放大结果后，与原图比对
+certutil -hashfile original.png SHA256
+certutil -hashfile upscaled.png SHA256
+# 两者一致 => 平台没有真的放大
+```
+
+> 教训：**异步任务「成功」不等于「做了事」**。凡是付费的后处理动作，
+> 都应该做一次「输出 vs 输入」的等价性检查（哈希或分辨率），否则会为无效操作反复付费。
+
 ---
 
 ## 四、网络相关的坑
