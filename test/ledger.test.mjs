@@ -16,7 +16,7 @@ test('首次写入会建表头，内容可读回', () => {
   try {
     record(t.dir, {
       model: 'gpt-image-2.5-ext', ratio: '1:1', images: 1, costUsd: 0.0085, credits: 0.085,
-      taskId: 'task_a', format: 'png', bytes: 1234, file: 'C:/x/a.png', prompt: 'a red apple',
+      taskId: 'task_a', format: 'png', bytes: 1234, file: join(t.dir, 'a.png'), prompt: 'a red apple',
     });
     const rows = readLedger(t.dir);
     assert.equal(rows.length, 1);
@@ -50,7 +50,7 @@ test('提示词含逗号/引号/换行时 CSV 仍可正确解析', () => {
     const tricky = 'a "quoted", comma\nand newline 中文';
     record(t.dir, {
       model: 'midjourney', ratio: null, images: 4, costUsd: 0.04504, credits: 0.45,
-      taskId: 'task_q', format: 'png', bytes: 1, file: 'C:/x/b.png', prompt: tricky,
+      taskId: 'task_q', format: 'png', bytes: 1, file: join(t.dir, 'b.png'), prompt: tricky,
     });
     const rows = readLedger(t.dir);
     assert.equal(rows.length, 1, '含换行的字段不应被拆成两行');
@@ -64,7 +64,7 @@ test('sidecar 里保存完整提示词（图片目录自描述）', () => {
     const full = 'x'.repeat(2000);
     const { sidecar } = record(t.dir, {
       model: 'm', ratio: '1:1', images: 1, costUsd: 0, taskId: 'task_s',
-      format: 'png', bytes: 1, file: 'C:/x/c.png', prompt: full,
+      format: 'png', bytes: 1, file: join(t.dir, 'c.png'), prompt: full,
     });
     const meta = JSON.parse(readFileSync(sidecar, 'utf8'));
     assert.equal(meta.prompt, full, 'sidecar 应保存未被截断的提示词');

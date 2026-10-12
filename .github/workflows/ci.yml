@@ -14,12 +14,19 @@ permissions:
 
 jobs:
   test:
-    name: 测试 (Node ${{ matrix.node }})
-    runs-on: ubuntu-latest
+    name: 测试 (${{ matrix.os }} / Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22', '24']
+        # 跨平台：本项目主要在 Windows 上开发（PowerShell 安装脚本、Junction 等），
+        # 但代码与测试必须同时能在 POSIX 上跑 —— 第一次 CI 就抓到过一个
+        # 「测试里写死 Windows 绝对路径」的问题。
+        include:
+          - { os: ubuntu-latest,  node: '20' }
+          - { os: ubuntu-latest,  node: '22' }
+          - { os: ubuntu-latest,  node: '24' }
+          - { os: windows-latest, node: '24' }
     steps:
       - uses: actions/checkout@v4
 
@@ -29,22 +36,32 @@ jobs:
 
       # 本项目零依赖，不需要 npm install —— 顺便验证这一点没被破坏
       - name: 确认零依赖
+        shell: bash
         run: |
           grep -q '"dependencies": {}' package.json || { echo "::error::package.json 的 dependencies 不为空"; exit 1; }
           test ! -d node_modules || { echo "::error::出现了 node_modules"; exit 1; }
           echo "零依赖 ✓"
 
       - name: 语法检查
+        shell: bash
         run: |
-          for f in scripts/*.mjs src/*.mjs test/*.mjs; do
-            node --check "$f"
-          done
+          for f in scripts/*.mjs src/*.mjs test/*.mjs; do node --check "$f"; done
           echo "全部通过 ✓"
+
+      - name: PowerShell 脚本语法检查（仅 Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null; $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./setup.ps1).Path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { $errors | ForEach-Object { Write-Host "::error::$($_.Message)" }; exit 1 }
+          Write-Host "setup.ps1 语法 ✓"
 
       - name: 单元测试
         run: node --test
 
       - name: CLI 冒烟测试（不需要 API Key）
+        shell: bash
         run: |
           node scripts/gen.mjs --help > /dev/null
           node scripts/gen.mjs --models > /dev/null
@@ -53,8 +70,10 @@ jobs:
           echo "CLI 冒烟通过 ✓"
 
       - name: 参数别名回归（--ar / --size 报错）
+        shell: bash
         run: |
           node scripts/gen.mjs --prompt "x" --ar 16:9 --dry-run | grep -q '16:9'
+          echo "--ar 别名 ✓"
           if node scripts/gen.mjs --prompt "x" --size 1024x1024 --dry-run 2>&1 | grep -q '只接受'; then
             echo "像素值被正确拒绝 ✓"
           else
@@ -87,3 +106,12 @@ jobs:
           fi
           grep -q '^config.json$' .gitignore || { echo "::error::.gitignore 没有忽略 config.json"; exit 1; }
           echo "config.json 未被追踪且已被忽略 ✓"
+
+      - name: 确认没有构建产物 / 运行数据被提交
+        run: |
+          for p in data out node_modules; do
+            if git ls-files --error-unmatch "$p" > /dev/null 2>&1; then
+              echo "::error::$p 下的运行数据被提交了"; exit 1
+            fi
+          done
+          echo "无运行数据入库 ✓"

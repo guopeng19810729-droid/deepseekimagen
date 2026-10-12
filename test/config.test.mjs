@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { DEFAULTS, loadConfig, requireApiKey, skillRoot } from '../src/config.mjs';
 
 const ENV_KEYS = ['APIMART_API_KEY', 'APIMART_BASE_URL', 'APIMART_PROXY', 'DEEPSEEKIMAGEN_OUTPUT', 'DEEPSEEKIMAGEN_LEDGER', 'NODE_USE_ENV_PROXY', 'HTTPS_PROXY', 'HTTP_PROXY'];
@@ -58,11 +58,17 @@ test('相对 output_dir 按配置文件所在目录解析', () => withEnv({}, ()
   } finally { t.cleanup(); }
 }));
 
-test('绝对 output_dir 保持原样', () => withEnv({}, () => {
-  const t = tmpConfig({ api_key: 'sk-x', output_dir: 'F:\\deepseekimagen' });
+test('绝对 output_dir 保持原样（按当前平台的绝对路径语义）', () => withEnv({}, () => {
+  // 注意：Windows 的 'F:\x' 在 POSIX 上不是绝对路径（path.posix.isAbsolute 为 false），
+  // 所以这里按平台取一个真正的绝对路径。写死 Windows 路径会让这个测试在 Linux CI 上失败
+  // —— 这正是 CI 第一次跑起来时抓到的问题。
+  const abs = process.platform === 'win32' ? 'F:\\deepseekimagen' : '/var/tmp/deepseekimagen';
+  assert.ok(isAbsolute(abs), '测试自身的前提：这必须是当前平台上的绝对路径');
+  const t = tmpConfig({ api_key: 'sk-x', output_dir: abs });
   try {
     const cfg = loadConfig({ configPath: t.path });
-    assert.equal(cfg.output_dir, 'F:\\deepseekimagen');
+    assert.equal(cfg.output_dir, abs, '绝对路径不应被重新解析');
+    assert.ok(isAbsolute(cfg.output_dir));
   } finally { t.cleanup(); }
 }));
 
