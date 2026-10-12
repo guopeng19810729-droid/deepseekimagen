@@ -1,0 +1,26 @@
+{
+  "name": "deepseekimagen",
+  "version": "0.1.0",
+  "description": "用 APIMart(apib.ai) 聚合 API 生图的命令行工具 + DSH 技能。默认 gpt-image-2.5-ext，可选 Midjourney。零依赖。",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "dimg": "scripts/gen.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node scripts/gen.mjs --check",
+    "models": "node scripts/gen.mjs --models",
+    "ledger": "node scripts/gen.mjs --ledger"
+  },
+  "keywords": [
+    "image-generation",
+    "apimart",
+    "gpt-image",
+    "midjourney",
+    "ai-agent-skill"
+  ],
+  "dependencies": {}
+}

@@ -1,0 +1,25 @@
+{
+  "_说明": "复制本文件为 config.json 并填入 api_key。config.json 已被 .gitignore 忽略，不会进仓。也可以用环境变量 APIMART_API_KEY 代替。",
+
+  "api_key": "",
+  "base_url": "https://api.apib.ai/v1",
+
+  "_proxy说明": "留空=直连（推荐，实测比走代理快约 3 倍）。若你的网络需要代理，填 http://127.0.0.1:7890 之类，脚本会用 NODE_USE_ENV_PROXY 方式生效（需 Node >= 24）。",
+  "proxy": "",
+
+  "_output说明": "生成的图片存这里。默认写到仓库外的独立目录，避免误提交。",
+  "output_dir": "./out",
+
+  "_ledger说明": "台账目录。留空=技能包内的 data/（已被 .gitignore 忽略）。",
+  "ledger_dir": "",
+
+  "default_model": "gpt-image-2.5-ext",
+  "midjourney_model": "midjourney",
+  "default_ratio": "1:1",
+
+  "_保护说明": "单次请求预估费用超过这个美元数时，脚本会拒绝执行，需要你显式加 --force。",
+  "max_cost_usd_per_request": 0.3,
+
+  "poll_interval_ms": 3000,
+  "poll_timeout_ms": 300000
+}

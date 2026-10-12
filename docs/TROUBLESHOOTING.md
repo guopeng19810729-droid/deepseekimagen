@@ -1,0 +1,184 @@
+# 排错与踩坑记录
+
+本文所有条目都是**实测踩出来的**，不是推测。
+
+---
+
+## 一、先跑自检
+
+```bash
+node scripts/gen.mjs --check
+```
+
+它会逐项报告：Node 版本、配置文件位置、密钥是否就绪、API 连通与鉴权、输出/台账目录可写性。
+
+---
+
+## 二、错误对照表
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `401 unauthorized` / `API 鉴权失败` | 密钥错、没填、或已撤销 | 填 `config.json` 的 `api_key`，或用 `APIMART_API_KEY` 环境变量 |
+| `403 forbidden` | 边缘规则或权限 | 见下文「UA 被拦」 |
+| `size must be auto or one of 1:1, 16:9, ...` | 传了像素值 | 改传**比例**（`--ratio 1:1`） |
+| `parameter "size" is not supported for asynchronous xAI image tasks` | 该模型不收 `size` | 省略 `--ratio`（如 `grok-imagine-*`） |
+| `unsupported image aspect ratio "1024:1024"` | Gemini 系只认比例 | 改 `--ratio 1:1` |
+| `model_price_error: ratio or price is not configured` | 该模型平台没开价 | 换模型（316 个里不是每个可用） |
+| 提交成功但任务 `failed` | 该模型/参数不可用 | 换模型或换参数。注意失败的**不一定扣费**（实测 `imagen-4.0-apimart` 失败时 cost=0） |
+| 任务长时间 `pending`/`processing` | 排队或模型慢 | 脚本轮询到 `poll_timeout_ms`（默认 5 分钟）。`gpt-image-2.5-ext` 实测约 60 秒 |
+| 图片 URL 打不开 | **平台结果 URL 24 小时过期** | 脚本已即时下载落盘；**不要只保存 URL** |
+| 中文变乱码 | 命令行传中文的编码问题 | 用 `--prompt-file`（脚本用 UTF-8 读取） |
+| `Invalid task ID.` | 查询任务时 id 格式不对 | 正常现象，不需要管（自检里用它探测连通性） |
+
+---
+
+## 三、平台行为上的坑（写代码时会撞）
+
+### 1. 异步任务制，不是同步返回
+
+```
+① POST /v1/images/generations  {model, prompt, n, size}
+   → {"code":200,"data":[{"status":"submitted","task_id":"task_..."}]}
+② GET  /v1/tasks/{task_id}     轮询到 status=completed
+   → {"status":"completed","cost":0.0085,"result":{"images":[{"url":["https://..."]}]}}
+③ 下载 url
+```
+
+按 OpenAI 同步接口的直觉写会拿不到图。**Midjourney 还要换个端点**（`/v1/midjourney/generations`）。
+
+### 2. 结果 URL 24 小时过期（精确验证过）
+
+`expires_at - completed = 86400` 秒，正好 24 小时。**必须即时下载**。
+
+### 3. 扩展名不可信 —— 必须按魔数判
+
+同一个平台上同时存在两种情况：
+
+- URL 以 `.png` 结尾，内容实际是 **JPEG**（`gpt-image-2.5-ext`、`qwen-image-3.0`）
+- URL 以 `.png` 结尾，内容确实是 PNG（`grok-imagine-image` 反过来是 JPEG）
+
+**踩过两次**（一次还把 `.jpg` 存成了 PNG 导致图片工具拒绝打开）。
+本工具用 `detectFormat()` 按魔数判定：
+
+```
+PNG  89 50 4E 47
+JPEG FF D8 FF
+WebP 52 49 46 46 ... 57 45 42 50
+GIF  47 49 46 38
+```
+
+### 4. `size` 参数各家不统一
+
+见 `docs/MODELS.md` 第四节。总结：**一律用比例，别用像素**。
+
+### 5. 提交后 `pending` 就能读到 `cost`，但**不能取消**
+
+任务一提交，`GET /v1/tasks/{id}` 就带 `cost` / `credits_cost` 了。
+但**没有取消端点**（`DELETE /tasks/{id}`、`POST /tasks/{id}/cancel` 等 6 种写法全部 404），
+也**没有估价接口**（试了 7 个路径全 404）。
+→ **想拿单价就必须真跑一次并付费。**
+
+### 6. `/v1/models/{id}` 与实际能力不一致
+
+`z-image-turbo` / `deepseek-v4.1-flash` / `wan2.7-image` 在这个端点上报
+「does not exist」，**但 `z-image-turbo` 实际能正常出图**。
+→ **不能用它校验模型是否存在**，以 `--models` 清单和实测为准。
+
+### 7. `supported_endpoint_types` 字段不可靠
+
+`/v1/models` 的该字段只标了 18 个图像模型，实际有 51 个。
+
+### 8. 提交参数错误会被 400 挡住，且不产生任务
+
+例如 `prompt` 为空 → `400 {"error":{"message":"`prompt` parameter is required..."}}`，
+**这类请求不扣费**。所以可以用「故意缺参数的探针」来验证端点存在性而不用花钱。
+
+---
+
+## 四、网络相关的坑
+
+### 1. apib.ai **不需要代理**（直连更快）
+
+实测（本机）：
+
+| 通道 | HTTP | 耗时 |
+|---|---|---|
+| 直连 | 401（正常，密钥是假的） | **0.33 ~ 0.37s** |
+| 走代理 127.0.0.1:29290 | 401 | 1.41 ~ 1.71s |
+
+**直连快约 3 倍**，所以 `config.proxy` 默认留空。
+
+⚠️ 但**别的站点可能需要代理** —— 比如 Cloudflare 上的站点在同样环境下直连约 **40% 失败**。
+要不要代理取决于**目标站点**，不是全局设置。
+
+### 2. 某些 UA 会被 Cloudflare 边缘拦（403）
+
+实测一组（打同一台 Cloudflare 站点）：
+
+| User-Agent | 结果 |
+|---|---|
+| `Python-urllib/3.13`、`Python-urllib/3.11` | **403** |
+| `libwww-perl/6.67` | **403** |
+| `python-urllib/3.13`（首字母小写） | 200 |
+| requests / aiohttp / Wget / Go / node-fetch / okhttp / Java / curl / 浏览器 / 空 UA | 200 |
+
+**精确匹配且大小写敏感**，而且发生在**鉴权之前**（连无需鉴权的健康检查都拦）。
+用 Python `urllib` 默认 UA 调这类站点会拿到 403 而查不到原因 —— 加一个自定义 UA 即可。
+
+### 3. Node 用代理要显式开启
+
+Node 内置 `fetch` **不读**系统代理设置。要么 Node ≥ 24 用
+`NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY=...`（本工具在 `config.proxy` 非空时自动开启），
+要么显式配 `ProxyAgent`（需额外依赖）。本工具选了前者，保持零依赖。
+
+---
+
+## 五、PowerShell / Windows 的坑（用命令行操作时）
+
+### 1. 变量名**大小写不敏感** —— 我因为这个得出过假结论
+
+```powershell
+$h = Invoke-RestMethod ...   # 本想存结果
+$H = @{ Authorization = ... } # 这是同一个变量！headers 被覆盖
+```
+
+后果：后续请求全部异常，我还基于错误输出报过「某板块 0 帖」的假结论。
+**用 `$hdr` 这类不会撞的名字。**
+
+### 2. `for` 循环的第三段可以省略 —— 漏了就变无限循环
+
+```powershell
+for ($i = 1; $i -le 3) { ... }        # ✗ 漏了 $i++，死循环！
+foreach ($i in 1..3) { ... }          # ✓ 安全
+```
+
+我因此在一轮测试里**误发了 310 篇重复帖**（约 1.7 帖/秒 × 3 分钟），
+全部清理掉了，但这个教训值得记：**批量写操作一定用 `foreach` 或带自增的 `for`，并加数量上限。**
+
+### 3. 命令行传中文会乱码
+
+用 `--prompt-file` 写文件再传（UTF-8 无 BOM）：
+
+```powershell
+[System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($false)))
+```
+
+### 4. `Invoke-RestMethod` 可能对某些大响应体解析失败
+
+报错里 HTTP 状态码是空的（不是 HTTP 错误）。改用 `curl.exe -s` 看原始响应。
+本工具用 Node，不受影响。
+
+---
+
+## 六、设计上刻意做的取舍
+
+| 取舍 | 原因 |
+|---|---|
+| 零依赖（只用 Node 内置） | 降低安装与维护成本；不需要 `npm install` |
+| 默认直连、代理可选 | 实测直连快 3 倍；代理是给特定站点用的 |
+| 图片默认写到仓库外 | 避免误提交；图片是产物不是源码 |
+| 每张图旁边写 sidecar JSON | 图片目录自描述 —— 三个月后还能查出提示词与花费 |
+| 台账用 CSV 而非数据库 | 可以直接用 Excel 打开、grep、追加；无并发需求 |
+| 格式按魔数判定 | 平台扩展名不可信，实测踩过两次 |
+| 一律用比例而非像素 | 平台就是这么设计的（传像素必 400） |
+| 用 `process.exitCode` 而不是 `process.exit()` | Windows 上带着未清理的 fetch handle 调 `process.exit()` 会触发 libuv 断言崩溃 |

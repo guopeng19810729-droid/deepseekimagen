@@ -1,0 +1,26 @@
+# ── 真实配置：含 API Key，永不进仓 ─────────────────────────
+config.json
+config.local.json
+*.local.json
+.env
+.env.*
+!.env.example
+secrets.*
+*.key
+*.pem
+
+# ── 运行数据与台账（含提示词与花费记录） ───────────────────
+data/
+out/
+*.log
+
+# ── 依赖与系统 ────────────────────────────────────────────
+node_modules/
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 注意：本仓库不忽略图片扩展名，方便 docs/ 里放示例图。
+# 生成的图片默认写到仓库外（见 config 的 output_dir）。
