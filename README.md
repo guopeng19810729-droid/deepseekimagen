@@ -190,8 +190,10 @@ node scripts/gen.mjs --ledger --tail 5
 }
 ```
 
-- **`proxy` 默认留空（直连）** —— 实测 apib.ai 直连 0.33s、走代理 1.5s，直连快约 3 倍。
-  若你的网络确实需要代理，填 `http://127.0.0.1:7890` 之类；脚本会用 `NODE_USE_ENV_PROXY` 生效（需 Node ≥ 24）。
+- **`proxy` 默认留空（直连）** —— 实测 apib.ai 的 `/models` 完整请求：**直连平均 240ms，走代理平均 786ms**
+  （约 3.3 倍；代理首次请求还有明显的冷启动开销，1825ms → 之后约 440ms）。
+  代理是给「某些被墙站点」用的，不是给这里用的。若确需代理，填 `http://127.0.0.1:7890` 之类；
+  脚本会用 `NODE_USE_ENV_PROXY` 生效（需 Node ≥ 24），该分支已对真实接口验证可用。
 - 环境变量优先级高于配置文件：`APIMART_API_KEY` / `APIMART_BASE_URL` / `APIMART_PROXY` /
   `DEEPSEEKIMAGEN_OUTPUT` / `DEEPSEEKIMAGEN_LEDGER`
 

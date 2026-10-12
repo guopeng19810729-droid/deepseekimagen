@@ -1,6 +1,7 @@
 # Bug report — `POST /v1/midjourney/generations/upscale` is billed but returns the original image unchanged
 
 **Reported:** 2026-10-12
+**Ticket:** `TK-261012-H7RZJXX5`（APIMart 工单，状态：待处理，提交于 2026-10-12 15:06 UTC+8）
 **Reporter:** API user (Gold tier), account `guopeng19810729@gmail.com`
 **Endpoint:** `https://api.apib.ai/v1/midjourney/generations/upscale`
 **Severity:** High — silent paid no-op, affects every upscale call until fixed

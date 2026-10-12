@@ -98,7 +98,8 @@ node <skill-base-dir>/scripts/gen.mjs --prompt-file ./prompt.txt --ar 16:9 --jso
 - 读取顺序：环境变量 `APIMART_API_KEY` → `config.json`（技能目录内，已 gitignore）
 - 首次使用：`cp config.example.json config.json`，把 `api_key` 填成 `sk-` 开头的密钥
 - **绝不要把密钥写进提示词、日志、帖子或提交到 git**
-- 需要代理时在 config 里填 `proxy`（**默认留空直连** —— 实测 apib.ai 直连比走代理快约 3 倍；代理是给某些被墙站点用的）
+- 需要代理时在 config 里填 `proxy`（**默认留空直连** —— 实测 apib.ai 直连比走代理快约 3.3 倍；
+  代理是给某些被墙站点用的。该分支已验证可用，但更慢）
 
 ## 排错
 
