@@ -33,8 +33,8 @@ node scripts/gen.mjs --prompt-file prompt.txt --ratio 1:1
 
 详见 [`docs/MODELS.md`](docs/MODELS.md)。
 
-> ⚠️ 上表是 **2026-10-10** 的实测记录，其中的 `nano-banana-2-ext` 等 id 平台后来已**改名或下线**
-> （见下方「价格表会过期」）。结论（谁便宜、谁跟得准）仍然有效，但**模型 id 请以 `--models` 为准**。
+> ℹ️ 上表是 **2026-10-10** 的实测记录。价格会随平台调整，**模型与价格请以 `--models`
+> 和定价页快照为准**（见下方「价格怎么维护」）；结论（谁便宜、谁跟得准）不受影响。
 
 ---
 
@@ -136,31 +136,41 @@ dimg --check | --models | --ledger [--tail N]
 | `--images <n>` | 张数（Midjourney 固定 4 张，忽略此项） |
 | `--version <v>` | Midjourney 版本（如 `6.1` / `7` / `8.2`） |
 | `--no-retry` | 关闭网络重试（默认 GET 重试全部可重试错误；POST 只重试"确定未送达"的错误） |
-| `--models --live [--all]` | 对比平台 `/models`，检查本地价格表是否已过期（发现失效 id 则**退出码 4**） |
+| `--models --live [--all]` | 与平台 `/models` 交叉参考（**仅供参考**，不判定模型上下线，退出码恒为 0） |
 | `--dry-run` | 只预演：打印模型/比例/张数/预估费用，**不提交、不花钱** |
 | `--force` | 跳过单次费用上限保护 |
 | `--json` | 以 JSON 输出结果 |
 | `--config <路径>` | 指定配置文件 |
 
-### 价格表会过期（重要）
+### 价格怎么维护（重要）
 
-`src/models.mjs` 里的价格是**手工维护**的 —— 平台的模型清单接口**不返回价格**。
-而平台改名的速度很快：**10-10 抄的表，10-12 就已经有 9 个 id 失效了**
-（`nano-banana-*-ext` 整族改成 `gemini-nano-banana-2.1-*`、`grok-imagine-1.5-ext` 改成
-`grok-imagine-1.5-apimart`、`flux-2` / `flux-kontext` 分别改成 `flux-2-flex` / `flux-kontext-max`……）。
+平台的模型清单接口 `/models` **不返回价格**，所以 `src/models.mjs` 里的价格是手工维护的。
+权威来源是**定价页快照**：
 
-所以定期跑一次：
-
-```bash
-node scripts/gen.mjs --models --live
+```
+docs/pricing/snapshot-YYYY-MM-DD.json     ← 登录后保存定价页（Ctrl+S）后抽取，已入库
+test/pricing.test.mjs                     ← 用快照逐条校验清单，CI 里每次都会跑
 ```
 
-它会告出「清单里有、平台已没有」的 id（**这是唯一真正可行动的漂移信号**；反方向多出来的
-绝大多数是 LLM/视频/音频等非生图模型）。有漂移时退出码为 **4**，可以挂到定时任务或 CI 上。
+**`/models` 不能用来判断"某个模型是否还存在"** —— 它漏报图像模型很严重（实测它只标了
+18 个图像模型，而当时定价页上有 51 个；连能正常出图的 `z-image-turbo` 都被它报成
+`does not exist`）。这个坑我踩过：曾拿它当裁判，把 9 个定价页上**仍在售**的模型
+（`nano-banana-*-ext`、`gpt-image-2-ext`、`flux-2`、`flux-kontext` 等）误判成"已下线"删掉了。
+`test/pricing.test.mjs` 就是为让这类错误在本地立刻暴露而加的。
 
-平台新增、但我还没拿到价格的模型，会以 `pricing: 'unknown'` 显式标注，`--models` 里显示
-**「价格未知」**，生成时也会明确告警 —— 因为**费用上限保护对它们失效**（无法预估费用）。
-绝不静默留一个没有价格的条目，这是有测试钉住的不变量。
+所以：
+
+```bash
+node scripts/gen.mjs --models --live     # 与 /models 交叉参考（仅供参考，退出码恒为 0）
+node --test test/pricing.test.mjs        # 权威检查：对着定价页快照核对价格
+```
+
+`--live` 会列出两个方向的差异，但**都不构成"下线"结论**：平台多出来的绝大多数是
+LLM/视频/音频模型；清单里有而 `/models` 没报的，很可能只是被它漏报了。
+
+**刷新价格**：重新保存一次定价页，再重新生成快照，`test/pricing.test.mjs` 会立刻指出哪些
+条目对不上（它带 0.5% 容差，因为定价页会四舍五入，而清单里存的是实测精确值 ——
+例如 Midjourney 页面写 `$0.045/次`，实际扣费是 `$0.04504`）。
 
 ---
 

@@ -1,5 +1,10 @@
-// 模型注册表：能力、参考价（apib.ai 黄金档，2026-10-10 抓取）、支持的尺寸参数形式
-// 价格是“参考价”，实际以任务返回的 cost 字段为准（脚本会记录真实花费）。
+// 模型注册表：能力、价格（apib.ai 定价页 · 黄金档）、支持的尺寸参数形式
+//
+// ⚠️ 权威源是**定价页快照** `docs/pricing/snapshot-*.json`，不是 `/models` 接口。
+//    `/models` 已知会漏报图像模型（实测：它只标了 18 个图像模型，而当时实际有 51 个；
+//    连能正常出图的 `z-image-turbo` 都会被它报成 "does not exist"）。
+//    所以**绝不能用 `/models` 判断某个模型"是否存在"** —— 那会产出假阳性。
+//    `test/pricing.test.mjs` 会用快照逐条校验本文件里的价格，改这里就必须与快照对齐。
 
 /** 默认主力模型（性价比最高：最便宜且 5 考点全中） */
 export const DEFAULT_MODEL = 'gpt-image-2.5-ext';
@@ -12,6 +17,12 @@ const GPT_IMAGE_RATIOS = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2
 const GEMINI_RATIOS = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '2:1', '1:2'];
 /** midjourney 只要比例 */
 const MJ_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'];
+/** 常见视频/图像比例 */
+const BASIC_RATIOS = ['1:1', '16:9', '9:16'];
+/** seedream 系 */
+const SEEDREAM_RATIOS = ['auto', '1:1', '4:3', '3:4', '16:9', '9:16'];
+/** FLUX 按像素档位 */
+const FLUX_MP = ['1MP', '2MP', '3MP', '4MP'];
 
 export const MODELS = {
   // ── 默认主力（按张计费，便宜且指令遵循好）────────────────
@@ -19,51 +30,72 @@ export const MODELS = {
     endpoint: 'images', usd: 0.0085, unit: '张', ratios: GPT_IMAGE_RATIOS,
     note: '默认主力。5 考点实测 5/5，全场最便宜',
   },
-  // ── 同价位段备选 ──────────────────────────────────────────
-  'z-image-turbo': { endpoint: 'images', usd: 0.01, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: '阿里 turbo，4 秒出图', localAlt: true },
-  'seedream-5-0-flash': { endpoint: 'images', usd: 0.0137, unit: '张', ratios: ['auto', '1:1', '4:3', '3:4', '16:9', '9:16'], note: '字节，快；实测位置约束会丢' },
-  'seedream-5-0-pro': { endpoint: 'images', usd: 0.0146, unit: '张', ratios: ['1:1', '1K', '2K'], note: '字节，多规格按档位加价' },
+  'gpt-image-2-ext': {
+    endpoint: 'images', usd: 0.0085, unit: '张', ratios: GPT_IMAGE_RATIOS,
+    note: '与 2.5-ext 同价',
+  },
+
+  // ── gpt-image 官方直连（按 token，费用不可预估）──────────
+  'gpt-image-1-official': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GPT_IMAGE_RATIOS, note: '官方直连，输入 $4/M' },
+  'gpt-image-1.5-official': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GPT_IMAGE_RATIOS, note: '官方直连，输入 $4 / 输出 $8 · 每 100 万 token' },
+  'gpt-image-2-official': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GPT_IMAGE_RATIOS, note: '官方直连，输入 $4/M' },
+  'gpt-image-2.5': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GPT_IMAGE_RATIOS, note: '按 token，输入 $4/M' },
+  'gpt-image-2.5-sunburst': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GPT_IMAGE_RATIOS, note: '按 token，输入 $4/M' },
+
+  // ── Gemini / nano-banana 系 ──────────────────────────────
+  'gemini-nano-banana-2.1-ext': { endpoint: 'images', usd: 0.02, unit: '张', ratios: GEMINI_RATIOS, note: 'Gemini nano-banana 2.1 按张档（定价页显示名 "Nano Banana 2.1" 是按 token 档）' },
+  'nano-banana-2-ext': { endpoint: 'images', usd: 0.015, unit: '张', ratios: GEMINI_RATIOS, note: 'Gemini，暖调自然' },
+  'nano-banana-2-lite-ext': { endpoint: 'images', usd: 0.0125, unit: '张', ratios: GEMINI_RATIOS, note: 'Gemini 最便宜一档' },
+  'nano-banana-ext': { endpoint: 'images', usd: 0.0125, unit: '张', ratios: GEMINI_RATIOS, note: 'Gemini' },
+  'nano-banana-pro-ext': { endpoint: 'images', usd: 0.03, unit: '张', ratios: GEMINI_RATIOS, note: 'Gemini pro 档' },
+  'nano-banana': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GEMINI_RATIOS, note: '按 token，输入 $0.24 / 输出 $2 · 每 100 万' },
+  'nano-banana-2': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GEMINI_RATIOS, note: '按 token，输入 $0.4 / 输出 $2.4 · 每 100 万' },
+  'nano-banana-2-lite': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GEMINI_RATIOS, note: '按 token，输入 $0.2 / 输出 $1.2 · 每 100 万' },
+  'nano-banana-pro': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GEMINI_RATIOS, note: '按 token，输入 $1.6 / 输出 $9.6 · 每 100 万' },
+  'gemini-nano-banana-2.1': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GEMINI_RATIOS, note: '定价页显示名 "Nano Banana 2.1"；输入 $1.2 / 输出 $6 · 每 100 万' },
+
+  // ── xAI（不支持 size 参数）───────────────────────────────
+  'grok-imagine-1.5-ext': { endpoint: 'images', usd: 0.015, unit: '张', ratios: null, note: 'xAI 1.5，不支持 size' },
+  'grok-imagine-1.5-edit-ext': { endpoint: 'images', usd: 0.015, unit: '张', ratios: null, note: 'xAI 1.5 编辑档，不支持 size' },
+  'grok-imagine-2.0-ext': { endpoint: 'images', usd: 0.015, unit: '张', ratios: null, note: 'xAI 2.0，不支持 size' },
   'grok-imagine-image': { endpoint: 'images', usd: 0.016, unit: '张', ratios: null, note: 'xAI，不支持 size，默认输出 1248x832 非方形' },
-  'seedream-4-0': { endpoint: 'images', usd: 0.0195, unit: '张', ratios: ['auto', '1:1', '4:3', '3:4', '16:9', '9:16'], note: '字节上一代' },
-  'qwen-image-3.0': { endpoint: 'images', usd: 0.0206, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: '阿里；实测咬痕/细节糊，最贵且画质一般' },
-  'wan2.7-image': { endpoint: 'images', usd: 0.0216, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: '阿里', localAlt: true },
-  'flux-2-pro': { endpoint: 'images', usd: 0.024, unit: '张', ratios: ['1MP', '2MP', '3MP', '4MP'], note: 'FLUX', localAlt: true },
-  'seedream-4-5': { endpoint: 'images', usd: 0.026, unit: '张', ratios: ['auto', '1:1', '4:3', '3:4', '16:9', '9:16'], note: '字节' },
-  'seedream-5-0-lite': { endpoint: 'images', usd: 0.028, unit: '张', ratios: ['auto', '1:1', '4:3', '3:4', '16:9', '9:16'], note: '字节' },
-  'qwen-image-3.0-pro': { endpoint: 'images', usd: 0.0286, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: '阿里 pro' },
-  'dall-e-3': { endpoint: 'images', usd: 0.032, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: 'OpenAI 老模型' },
-  'flux-kontext-pro': { endpoint: 'images', usd: 0.032, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: '适合参考图编辑' },
-  'flux-3-image': { endpoint: 'images', usd: 0.0328, unit: '张', ratios: ['768SQ', '1K', '1.5K', '2K', '4K'], note: 'FLUX3；规格跨度极大，最高 $0.4856，务必锁 size' },
-  'imagen-4.0-apimart': { endpoint: 'images', usd: 0.04, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: 'Google imagen（实测提交后任务 failed，慎用）' },
-  'grok-imagine-image-quality': { endpoint: 'images', usd: 0.04, unit: '张', ratios: null, note: 'xAI 高质量档' },
-  'wan2.7-image-pro': { endpoint: 'images', usd: 0.0544, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: '阿里 pro', localAlt: true },
-  'flux-2-max': { endpoint: 'images', usd: 0.056, unit: '张', ratios: ['1MP', '2MP', '3MP', '4MP'], note: 'FLUX 顶配', localAlt: true },
+  'grok-imagine-image-2.0': { endpoint: 'images', usd: 0.032, unit: '张', ratios: null, note: 'xAI 2.0，不支持 size' },
+  'grok-imagine-image-quality': { endpoint: 'images', usd: 0.04, unit: '张', ratios: null, note: 'xAI 高质量档，不支持 size' },
 
-  // ── 平台新增（2026-10-12 由 `--models --live` 发现；价格待补）────────────
-  // 这些 id 在平台 /models 里确实存在，但我手上还没有它们的价格（定价页需重新抓取）。
-  // 显式标 pricing:'unknown' 而不是留空 —— 否则费用闸门会静默失效：
-  // estimateUsd 返回 null，单次上限保护对它们等于没有。
-  'gpt-image-2.5-flare': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: GPT_IMAGE_RATIOS, note: '2.5 系新档，价格待补' },
-  'gpt-image-2.5-sunburst': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: GPT_IMAGE_RATIOS, note: '2.5 系新档，价格待补' },
-  'gemini-nano-banana-2.1-ext': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: GEMINI_RATIOS, note: 'nano-banana 系新命名（旧 nano-banana-*-ext 已全部下线），价格待补' },
-  'gemini-3-pro-image-preview': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: GEMINI_RATIOS, note: 'Gemini 3 图像预览，价格待补' },
-  'gemini-3.1-flash-image-preview': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: GEMINI_RATIOS, note: 'Gemini 3.1 图像预览，价格待补' },
-  'gemini-3.1-flash-lite-image': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: GEMINI_RATIOS, note: 'Gemini 3.1 轻量图像，价格待补' },
-  'grok-imagine-1.5-apimart': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: null, note: 'xAI（旧 grok-imagine-1.5-ext 已下线），价格待补' },
-  'grok-imagine-2.0-ext': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: null, note: 'xAI 2.0，价格待补' },
-  'grok-imagine-image-2.0': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: null, note: 'xAI 2.0，价格待补' },
-  'flux-2-flex': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: ['1MP', '2MP', '3MP', '4MP'], note: 'FLUX（旧 flux-2 已下线）', localAlt: true },
-  'flux-kontext-max': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: 'FLUX kontext 顶配（旧 flux-kontext 已下线）', localAlt: true },
-  'qwen-image-2.0': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: '阿里（本机可本地跑，不必走 API）', localAlt: true },
-  'qwen-image-2.0-pro': { endpoint: 'images', pricing: 'unknown', usd: null, unit: '张', ratios: ['1:1', '16:9', '9:16'], note: '阿里 pro', localAlt: true },
+  // ── 字节 seedream ────────────────────────────────────────
+  'seedream-5-0-flash': { endpoint: 'images', usd: 0.0137, unit: '张', ratios: SEEDREAM_RATIOS, note: '字节，快；实测位置约束会丢' },
+  'seedream-5-0-pro': { endpoint: 'images', usd: 0.0146, unit: '张', ratios: ['1:1', '1K', '2K'], note: '字节，多规格按档位加价' },
+  'seedream-4-0': { endpoint: 'images', usd: 0.0195, unit: '张', ratios: SEEDREAM_RATIOS, note: '字节上一代' },
+  'seedream-4-5': { endpoint: 'images', usd: 0.026, unit: '张', ratios: SEEDREAM_RATIOS, note: '字节' },
+  'seedream-5-0-lite': { endpoint: 'images', usd: 0.028, unit: '张', ratios: SEEDREAM_RATIOS, note: '字节' },
 
-  // ── 按 Token 计费（价格不可预估，慎用）──────────────────
-  'gpt-image-2-official': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GPT_IMAGE_RATIOS, note: '官方直连，按 token 计（图片输出约 $24/M），成本不可预估' },
+  // ── 阿里 qwen-image / wan ────────────────────────────────
+  'qwen-image-2.0': { endpoint: 'images', usd: 0.02, unit: '张', ratios: BASIC_RATIOS, note: '阿里（本机可本地跑，不必走 API）', localAlt: true },
+  'qwen-image-2.0-pro': { endpoint: 'images', usd: 0.05, unit: '张', ratios: BASIC_RATIOS, note: '阿里 pro（本机可本地跑）', localAlt: true },
+  'qwen-image-3.0': { endpoint: 'images', usd: 0.0206, unit: '张', ratios: BASIC_RATIOS, note: '阿里；实测咬痕/细节糊，比 2.0 更贵画质更一般' },
+  'qwen-image-3.0-pro': { endpoint: 'images', usd: 0.0286, unit: '张', ratios: BASIC_RATIOS, note: '阿里 pro' },
+  'wan2.7-image': { endpoint: 'images', usd: 0.0216, unit: '张', ratios: BASIC_RATIOS, note: '阿里', localAlt: true },
+  'wan2.7-image-pro': { endpoint: 'images', usd: 0.0544, unit: '张', ratios: BASIC_RATIOS, note: '阿里 pro', localAlt: true },
+
+  // ── FLUX ─────────────────────────────────────────────────
+  'flux-2-pro': { endpoint: 'images', usd: 0.024, unit: '张', ratios: FLUX_MP, note: 'FLUX', localAlt: true },
+  'flux-2': { endpoint: 'images', usd: 0.04, unit: '张', ratios: FLUX_MP, note: 'FLUX', localAlt: true },
+  'flux-2-max': { endpoint: 'images', usd: 0.056, unit: '张', ratios: FLUX_MP, note: 'FLUX 顶配', localAlt: true },
+  'flux-3-image': { endpoint: 'images', usd: 0.0328, unit: '张', ratios: ['768SQ', '1K', '1.5K', '2K', '4K'], note: 'FLUX3；规格跨度极大，最高 $0.4856，务必锁 size', localAlt: true },
+  'flux-kontext-pro': { endpoint: 'images', usd: 0.032, unit: '张', ratios: BASIC_RATIOS, note: '适合参考图编辑', localAlt: true },
+  'flux-kontext': { endpoint: 'images', usd: 0.064, unit: '张', ratios: BASIC_RATIOS, note: '按张计费最贵的一档', localAlt: true },
+
+  // ── 其他 ─────────────────────────────────────────────────
+  'z-image-turbo': { endpoint: 'images', usd: 0.01, unit: '张', ratios: BASIC_RATIOS, note: '阿里 turbo，实测 15~18 秒出图', localAlt: true },
+  'dall-e-3': { endpoint: 'images', usd: 0.032, unit: '张', ratios: BASIC_RATIOS, note: 'OpenAI 老模型' },
+  'imagen-4.0-apimart': { endpoint: 'images', usd: 0.04, unit: '张', ratios: BASIC_RATIOS, note: 'Google imagen（实测提交后任务 failed，慎用）' },
+  'mai-image-2.6': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GEMINI_RATIOS, note: '按 token，输入 $4/M（尺寸支持未实测）' },
+  'mai-image-2.6-flash': { endpoint: 'images', pricing: 'token', usd: null, unit: 'Token', ratios: GEMINI_RATIOS, note: '按 token，输入 $1.4/M（尺寸支持未实测）' },
 
   // ── Midjourney：走专用端点，一次出 4 张 ─────────────────
   midjourney: {
     endpoint: 'midjourney', usd: 0.04504, unit: '次(4张)', ratios: MJ_RATIOS,
-    note: '专用端点。一次 imagine 出 2x2 九宫格 = 4 张，单张约 $0.0113。油画/摄影风格强，"数量+特定位置"类组合约束会衰减',
+    note: '专用端点。一次 imagine 出 2x2 九宫格 = 4 张，单张约 $0.0113。风格/工艺感强，但"数量+特定位置"与"姿势/机位"类约束会衰减',
     versions: ['6.1', '7', '8.1', '8.2'],
   },
 };
@@ -72,8 +104,8 @@ export const MODELS = {
 const ALIASES = new Map(Object.entries({
   'default': DEFAULT_MODEL, '默认': DEFAULT_MODEL, '2.5': 'gpt-image-2.5-ext', 'gpt-image-2.5': 'gpt-image-2.5-ext',
   mj: 'midjourney', mid: 'midjourney', 'mj-fast': 'midjourney',
-  nano: 'gemini-nano-banana-2.1-ext', 'banana': 'gemini-nano-banana-2.1-ext',
-  seedream: 'seedream-5-0-pro', qwen: 'qwen-image-3.0', grok: 'grok-imagine-image',
+  nano: 'nano-banana-2-ext', 'banana': 'nano-banana-2-ext',
+  seedream: 'seedream-5-0-pro', qwen: 'qwen-image-2.0', grok: 'grok-imagine-image',
 }));
 
 export function resolveModel(name) {
@@ -114,11 +146,11 @@ export function normalizeRatio(input, model) {
   );
 }
 
-/** 预估单次费用；按 token 计费的模型返回 null（不可预估） */
+/** 预估单次费用；按 token 计费或价格未知时返回 null（不可预估） */
 export function estimateUsd(model, images = 1) {
   const spec = MODELS[model];
   if (!spec) return null;
-  if (spec.pricing === 'token' || spec.usd == null) return null;
+  if (spec.pricing === 'token' || spec.pricing === 'unknown' || spec.usd == null) return null;
   return spec.usd * (spec.endpoint === 'midjourney' ? 1 : images);
 }
 
@@ -131,14 +163,17 @@ export function listModels({ includeLocal = true } = {}) {
 }
 
 /**
- * 对比本地价格表与平台实际返回的模型清单（纯函数，便于测试）。
+ * 对比本地清单与平台 `/models` 返回的 id 列表（纯函数，便于测试）。
  *
- * 方向说明：平台的 `/models` 包含**全部模态**（LLM / 视频 / 音频 / 向量…），
- * 所以「平台有、清单没有」绝大多数只是非生图模型，参考价值低；
- * 真正可行动的是「清单有、平台没有」—— 那意味着清单里的 id 已下线或改名，价格表该更新了。
+ * ⚠️ **只作参考，不能当"模型是否存在"的裁判。** `/models` 已知会漏报图像模型
+ * （实测只标 18 个图像模型而实际有 51 个；能正常出图的 `z-image-turbo` 也会被它报成不存在）。
+ * 2026-10-12 就因为它误判，把 9 个定价页上仍在售的模型当成了"已下线"。
+ * 所以两个方向都只是**线索**：
+ *   - `missingOnPlatform`：清单里有、`/models` 没报 —— 需人工核对定价页，**不代表已下线**
+ *   - `notInRegistry`：`/models` 有、清单没有 —— 可能只是非生图模型，**也可能定价页没上架（不可用）**
+ * 真正的权威是定价页快照，见 `test/pricing.test.mjs`。
  */
 export function compareRegistry(platformIds, { registry = MODELS } = {}) {
-  // 过滤 null/undefined/空串再转字符串，避免把 'null'/'undefined' 当成真实模型 id
   const set = new Set(
     (platformIds || []).filter((x) => x != null && x !== '').map((x) => String(x)),
   );
@@ -146,9 +181,7 @@ export function compareRegistry(platformIds, { registry = MODELS } = {}) {
   return {
     platformCount: set.size,
     localCount: localIds.length,
-    /** 清单里有、平台已没有 —— 需要人工核对 */
     missingOnPlatform: localIds.filter((id) => !set.has(id)),
-    /** 平台有、清单未收录 —— 可能只是别的模态 */
     notInRegistry: [...set].filter((id) => !Object.prototype.hasOwnProperty.call(registry, id)),
   };
 }

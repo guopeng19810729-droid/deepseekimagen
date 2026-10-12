@@ -133,10 +133,15 @@ function doModels(argv, cfg) {
 }
 
 /**
- * --models --live：把本地价格表与平台 /models 实际返回做对比，检查清单是否已过期。
- * 平台的模型清单接口**不提供价格**，所以 src/models.mjs 的价格表是手工维护的、会随时间过期，
- * 这个命令就是用来发现过期的。
- * 退出码：0 = 一致；4 = 发现漂移（便于 CI 或定时任务报警）。
+ * --models --live：把本地清单与平台 /models 的 id 列表做**交叉参考**。
+ *
+ * ⚠️ 这个命令**不判定"模型是否已下线"** —— 因为 `/models` 已知会漏报图像模型
+ * （实测：它只标了 18 个图像模型而当时实际有 51 个；连能正常出图的 `z-image-turbo`
+ * 都会被它报成 "does not exist"）。2026-10-12 就因为拿它当裁判，
+ * 把 9 个定价页上仍在售的模型误判成"已下线"。
+ *
+ * 所以这里只输出**线索**，退出码恒为 0。真正权威的一致性检查是
+ * `test/pricing.test.mjs`（对着人工保存的定价页快照逐条核对价格）。
  */
 async function doModelsLive(argv, cfg) {
   let key;
@@ -147,7 +152,7 @@ async function doModelsLive(argv, cfg) {
   }
 
   const api = new Apimart(clientOpts(argv, cfg, key));
-  log(c.bold('清单新鲜度检查：本地价格表 vs 平台 /models'));
+  log(c.bold('与平台 /models 交叉参考（仅供参考，不用于判定模型是否下线）'));
 
   let platform;
   try {
@@ -156,40 +161,39 @@ async function doModelsLive(argv, cfg) {
   } catch (e) {
     die(`拉取平台模型列表失败：${e.message}`);
   }
-  if (!platform.length) die('平台 /models 返回空列表，无法比对（不据此判定清单过期）。');
+  if (!platform.length) die('平台 /models 返回空列表，无法比对。');
 
   const r = compareRegistry(platform);
-  log(`  平台模型总数 : ${r.platformCount}`);
-  log(`  本地清单条数 : ${r.localCount}`);
-  log('');
-
-  if (r.missingOnPlatform.length) {
-    log(c.yellow(`  ⚠ 清单里有、平台已没有（${r.missingOnPlatform.length} 个）—— 可能已下线或改名，请核对：`));
-    for (const id of r.missingOnPlatform) {
-      const m = MODELS[id];
-      log(`      ${id}  ${m.usd != null ? fmtUsd(m.usd) : '按Token计'}  ${m.note ?? ''}`);
-    }
-  } else {
-    log(c.green('  ✓ 清单里的模型平台都还在'));
-  }
+  log(`  平台 /models 报出 : ${r.platformCount} 个`);
+  log(`  本地清单         : ${r.localCount} 个`);
   log('');
 
   if (r.notInRegistry.length) {
-    // 平台 /models 含全部模态（LLM / 视频 / 音频…），所以这个方向绝大多数不是生图模型
-    if (argv.all) {
-      log(c.dim(`  平台有、清单未收录（${r.notInRegistry.length} 个；多为非生图模型，仅供参考）：`));
-      for (const id of r.notInRegistry) log(c.dim(`      ${id}`));
-    } else {
-      log(c.dim(`  平台另有 ${r.notInRegistry.length} 个模型未收录进清单（含大量非生图模型；加 --all 可列出）`));
-    }
+    // 平台有、清单没有：绝大多数是 LLM/视频/音频；但也可能是"只在 /models 出现、
+    // 定价页没上架"的模型 —— 那类实测常报 model_price_error，不能直接用
+    log(`  平台有、清单未收录（${r.notInRegistry.length} 个）—— 多为非生图模型；`);
+    log(c.dim('    若要收进清单，请先确认它在定价页上有价格，否则很可能报 model_price_error'));
+    if (argv.all) for (const id of r.notInRegistry) log(c.dim(`      ${id}`));
+    else log(c.dim(`    （加 --all 列出全部）`));
+    log('');
   }
 
-  const drift = r.missingOnPlatform.length > 0;
-  log('');
-  log(drift
-    ? c.yellow('  → 发现漂移，建议更新 src/models.mjs 的价格表（退出码 4）')
-    : c.green('  → 清单与平台一致'));
-  return drift ? 4 : 0;
+  if (r.missingOnPlatform.length) {
+    log(c.yellow(`  清单里有、/models 未报出（${r.missingOnPlatform.length} 个）`));
+    log(c.dim('    ⚠️ 这不代表已下线 —— 该接口对图像模型漏报严重。请以定价页快照为准：'));
+    log(c.dim('       若它们仍在 docs/pricing 的快照里、且 test/pricing.test.mjs 通过，就是正常的'));
+    for (const id of r.missingOnPlatform) {
+      const m = MODELS[id];
+      log(`      ${id}  ${m.usd != null ? fmtUsd(m.usd) : '按Token计'}`);
+    }
+    log('');
+  } else {
+    log(c.green('  ✓ /models 报出的模型里包含清单全部条目'));
+    log('');
+  }
+
+  log(c.dim('  权威检查：`node --test test/pricing.test.mjs`（对着定价页快照核对价格）'));
+  return 0;
 }
 
 function doLedger(argv, cfg) {
@@ -568,7 +572,7 @@ ${c.bold('用法')}
   dimg --prompt-file prompt.txt [选项]        ← 中文提示词推荐（避开命令行编码问题）
   dimg --check                                自检：配置/密钥/连通/目录可写
   dimg --models                               列出可用模型与参考价
-  dimg --models --live [--all]                对比平台实际模型，检查价格表是否过期（漂移则退出码 4）
+  dimg --models --live [--all]                与平台 /models 交叉参考（仅供参考，不判定上下线）
   dimg --ledger [--tail N]                    查看台账汇总
 
 ${c.bold('常用选项')}

@@ -90,11 +90,13 @@ test('价格字段自洽：usd 为 null 时必须显式标注 pricing', () => {
   }
 });
 
-test('estimateUsd：价格未知的模型返回 null（调用方必须据此告警）', () => {
-  const unknowns = Object.entries(MODELS).filter(([, m]) => m.pricing === 'unknown');
-  assert.ok(unknowns.length > 0, '清单里应当存在「价格未知」的条目（平台新增模型）');
-  for (const [id] of unknowns) {
-    assert.equal(estimateUsd(id, 1), null, `${id} 价格未知时 estimateUsd 必须返回 null`);
+test('estimateUsd：不可预估的模型一律返回 null（调用方必须据此告警）', () => {
+  for (const [id, m] of Object.entries(MODELS)) {
+    if (m.pricing === 'token' || m.pricing === 'unknown' || m.usd == null) {
+      assert.equal(estimateUsd(id, 1), null, `${id} 不可预估时必须返回 null`);
+    } else {
+      assert.ok(estimateUsd(id, 1) > 0, `${id} 有价格就该算出正数`);
+    }
   }
 });
 

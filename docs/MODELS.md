@@ -4,9 +4,10 @@
 **1 credit = $0.10**；黄金价 ≈ 官方价 × 80%。
 实际花费以任务返回的 `cost` 字段为准。
 
-> ⚠️ **价格表会过期。** 平台改名很快：2026-10-12 用 `--models --live` 复核时，
-> 10-10 抄的表里已有 **9 个 id 失效**（详见文末「模型 id 漂移记录」）。
-> 模型是否存在请以 `node scripts/gen.mjs --models --live` 为准；价格请以任务返回的 `cost` 为准。
+> ⚠️ **价格会随平台调整。** 本文价格对应 **2026-10-12 的定价页快照**
+> （`docs/pricing/snapshot-2026-10-12.json`），且由 `test/pricing.test.mjs` 在 CI 里逐条校验。
+> **模型是否存在、卖多少钱，以定价页为准** —— 不要用 `/models` 接口判断（它会漏报图像模型，
+> 详见文末第七节）。实际扣费请以任务返回的 `cost` 为准。
 
 > 抓取时的账户：黄金档，余额约 $9.5。
 
@@ -166,46 +167,47 @@
 1. **部分模型没开价**：`gemini-2.5-flash-image-preview` 返回
    `model_price_error: ratio or price is not configured`。
    316 个模型里**不是每个都能用**，先用 `--dry-run` 或小任务试。
-2. **计费按 `--fast` 计**：Midjourney 文档说 `speed` 默认 relax，但平台实际自动追加了 `--fast`
-   （返回的 `prompt_en` 结尾为 `... --ar 1:1 --v 6.1 --fast`）。要控成本需显式传 `speed`。
+2. **计费档位会变**：Midjourney 文档说 `speed` 默认 relax，但平台实际自动追加过 `--fast`；
+   2026-10-12 复核时追加的又变成了 `--relax`。**该档位随平台策略变化，要控成本就显式传 `speed`。**
 
 ---
 
-*数据来源：apib.ai 定价页（2026-10-10，黄金档）+ 本工具对同一提示词的实测扣费交叉验证。*
+## 七、两个「权威源」互相矛盾（2026-10-12 记录）
+
+维护清单时要接触两个数据源，它们**在两个方向上都会打架**：
+
+| 源 | 内容 | 可信度 |
+|---|---|---|
+| 定价页 → `docs/pricing/snapshot-*.json` | 46 个生图模型 + 价格 | **权威**：能上架就有价，买了就能用 |
+| `GET /v1/models` | 316 个 id（含 LLM / 视频 / 音频） | **不可信**：对图像模型漏报严重 |
+
+**实测差异（2026-10-12）**
+
+* **定价页有、`/models` 没报（14 个）**：`gpt-image-2-ext`、`nano-banana-2-ext`、
+  `nano-banana-ext`、`nano-banana-2-lite-ext`、`nano-banana-pro-ext`、`grok-imagine-1.5-ext`、
+  `grok-imagine-1.5-edit-ext`、`flux-2`、`flux-kontext`，以及几个按 token 的 nano-banana 档。
+  → **这些仍在售，价格也没变。**
+* **`/models` 有、定价页没有（7 个）**：`gpt-image-2.5-flare`、`gemini-3-pro-image-preview`、
+  `gemini-3.1-flash-image-preview`、`gemini-3.1-flash-lite-image`、`grok-imagine-1.5-apimart`、
+  `flux-2-flex`、`flux-kontext-max`。
+  → **不要按"可买"收录**：定价页没上架的模型实测容易报
+  `model_price_error: ratio or price is not configured`。
+
+**我踩的坑**：一开始拿 `/models` 当"模型是否存在"的裁判，把第一组里的 9 个误判成"已下线"
+从清单删掉了，又照着第二组加了 7 个定价页根本没有的。**两个源都不是全集，但只有定价页
+能回答"能不能买、多少钱"。**
+
+**现在的设计**
+
+* `src/models.mjs` 以**定价页快照**为准；`test/pricing.test.mjs` 逐条校验价格
+  （带 0.5% 容差 —— 因为定价页会四舍五入，而清单里存的是台账实测的精确值：
+  Midjourney 页面写 `$0.045/次`，实际扣费是 `$0.04504`）
+* `--models --live` 降级为**交叉参考**，退出码恒为 0，**不再断言"已下线"**
+* 输出里直接写明该接口会漏报，避免下一个人重犯
+
+**怎么刷新**：登录后 `Ctrl+S` 保存定价页 → 重新抽取快照 → 跑 `node --test`，
+测试会直接指出哪些条目对不上。
 
 ---
 
-## 六、模型 id 漂移记录（2026-10-12 复核）
-
-用 `node scripts/gen.mjs --models --live` 对比平台实际清单后发现：
-**10-10 抄的表，两天内已有 9 个 id 失效。**
-
-| 旧 id（已失效） | 平台现状 |
-|---|---|
-| `nano-banana-2-lite-ext` · `nano-banana-ext` · `nano-banana-2-ext` · `nano-banana-pro-ext` | 整族改名为 **`gemini-nano-banana-2.1-ext`**（加了 `gemini-` 前缀） |
-| `nano-banana-pro` | 已不存在（Gemini 图像模型改名为 `gemini-3-pro-image-preview` 等） |
-| `grok-imagine-1.5-ext` | 改为 `grok-imagine-1.5-apimart`；另有新的 `grok-imagine-2.0-ext` |
-| `gpt-image-2-ext` | 已不存在（现有 `gpt-image-2` / `gpt-image-2.5-ext`） |
-| `flux-2` | 改为 `flux-2-flex`（同族还新增 `flux-2-pro` / `flux-2-max`） |
-| `flux-kontext` | 改为 `flux-kontext-max`（`flux-kontext-pro` 仍在） |
-
-**平台新增、清单里当时没有的生图模型**（现已加入清单并标注 `价格未知`）：
-
-`gpt-image-2.5-flare` · `gpt-image-2.5-sunburst` · `gemini-nano-banana-2.1-ext` ·
-`gemini-3-pro-image-preview` · `gemini-3.1-flash-image-preview` · `gemini-3.1-flash-lite-image` ·
-`grok-imagine-1.5-apimart` · `grok-imagine-2.0-ext` · `grok-imagine-image-2.0` ·
-`flux-2-flex` · `flux-kontext-max` · `qwen-image-2.0` · `qwen-image-2.0-pro`
-
-**这些新模型的价格尚未收录**（定价页需要重新抓取）。它们被**显式**标为 `pricing: 'unknown'`：
-
-* `--models` 里显示 **「价格未知」**
-* 生成时给出明确告警：**单次费用上限保护对它失效**
-* `estimateUsd()` 返回 `null`
-
-这是刻意设计 —— 有单测钉住「`usd` 为 null 时必须显式标注 `pricing`」这个不变量，
-防止出现「清单看着齐全、费用闸门其实静默失效」的漏洞。
-
-**怎么补价格**：重新保存一次平台定价页（登录后 `Ctrl+S` 存成 HTML），我就能解析出准确价格填进清单。
-
-**一般性教训**：这个平台的模型 id 是**会改名**的，而改名对调用方是硬失败（400/404）。
-所以**任何长期运行的东西都不该硬编码模型 id**，至少要用 `--models --live` 定期核对。
+*数据来源：apib.ai 定价页（2026-10-12 快照，黄金档）+ 本工具对同一提示词的实测扣费交叉验证。*
