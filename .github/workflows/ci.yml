@@ -21,7 +21,7 @@ jobs:
       matrix:
         # 跨平台：本项目主要在 Windows 上开发（PowerShell 安装脚本、Junction 等），
         # 但代码与测试必须同时能在 POSIX 上跑 —— 第一次 CI 就抓到过一个
-        # 「测试里写死 Windows 绝对路径」的问题。
+        # 「测试里写死 Windows 绝对路径」的问题，那在 Windows 本地永远测不出来。
         include:
           - { os: ubuntu-latest,  node: '20' }
           - { os: ubuntu-latest,  node: '22' }
@@ -82,10 +82,11 @@ jobs:
           fi
 
   secret-scan:
-    name: 密钥扫描
+    name: 密钥扫描与入库卫生
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: 扫描疑似 API Key（test/ 除外，那里有测试用假串）
         run: |
           set +e
@@ -104,14 +105,27 @@ jobs:
             echo "::error::config.json 被 git 追踪了！真实密钥可能已泄露"
             exit 1
           fi
-          grep -q '^config.json$' .gitignore || { echo "::error::.gitignore 没有忽略 config.json"; exit 1; }
+          grep -q '^config\.json$' .gitignore || { echo "::error::.gitignore 没有忽略 config.json"; exit 1; }
           echo "config.json 未被追踪且已被忽略 ✓"
 
-      - name: 确认没有构建产物 / 运行数据被提交
+      - name: 确认没有运行数据被提交
         run: |
           for p in data out node_modules; do
             if git ls-files --error-unmatch "$p" > /dev/null 2>&1; then
-              echo "::error::$p 下的运行数据被提交了"; exit 1
+              echo "::error::$p 下的运行数据被提交了"
+              exit 1
             fi
           done
           echo "无运行数据入库 ✓"
+
+      - name: 确认没有编辑器 / Office 临时文件被提交
+        run: |
+          # Office 打开文档会生成 ~$xxx 锁文件；编辑器会留 .tmp / .swp / xxx~
+          if git ls-files | grep -E '(^|/)~\$|\.(tmp|swp)$|~$'; then
+            echo "::error::仓库里混入了临时文件（上方为清单），请 git rm --cached 后补进 .gitignore"
+            exit 1
+          fi
+          echo "无临时文件入库 ✓"
+          # 同时确认 .gitignore 有兜底规则
+          grep -q '^~\$\*$' .gitignore || { echo "::error::.gitignore 缺少 ~\$* 规则"; exit 1; }
+          echo ".gitignore 兜底规则 ✓"
