@@ -212,11 +212,23 @@ npm run lint     # 语法检查
 - **台账**：CSV 转义（提示词含逗号/引号/换行）、失败任务留痕、按模型汇总
 - **配置**：文件 → 环境变量覆盖、相对路径解析、代理开关、缺 Key 时的友好报错
 
-`.github/workflows/ci.yml` 在每次 push 时跑：Node 20/22/24 三档测试、语法检查、CLI 冒烟、
-参数别名回归、**密钥扫描**（含「`config.json` 绝不被追踪」的硬校验）。
+`.github/workflows/ci.yml` 在每次 push 时跑：**ubuntu 20/22/24 加 windows 24 四档**、语法检查、
+CLI 冒烟、参数别名回归、**密钥扫描**（含「`config.json` 绝不被追踪」「无运行数据入库」
+「无编辑器临时文件入库」的硬校验）。
 
 > 说明：CI 只覆盖**第一步（API）**。本地 ComfyUI 那条路依赖本机 GPU 与数十 GB 模型文件，
 > GitHub 的 runner 上没有，天然无法在那里验证。
+
+### 维护 CI 时注意（真实踩过的坑）
+
+1. **测试不能有平台假设**。曾经把 `output_dir` 写死成 `F:\deepseekimagen`，
+   而在 POSIX 上 `path.posix.isAbsolute('F:\...')` 是 `false`，测试在 Linux 上必挂 ——
+   **在 Windows 本地永远测不出来**，这就是加 windows/ubuntu 双平台矩阵的原因。
+2. **GitHub 用 `bash -e -o pipefail`**。检查"预期失败"的命令时**不要让它直接进管道**：
+   `if node <会失败> | grep -q X; then` 里 pipefail 会让整条管道取到失败码，
+   即使 grep 匹配成功也走 else。要用 `out=$(cmd 2>&1 || true)` 再判断。
+3. **别用正则往 YAML 里插代码**。用脚本替换生成的 YAML 很容易把引号/换行搞坏，
+   而坏掉的 workflow 只会在下一次 push 时才暴露。
 
 ---
 

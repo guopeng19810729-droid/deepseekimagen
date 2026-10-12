@@ -72,11 +72,29 @@ jobs:
       - name: 参数别名回归（--ar / --size 报错）
         shell: bash
         run: |
-          node scripts/gen.mjs --prompt "x" --ar 16:9 --dry-run | grep -q '16:9'
-          echo "--ar 别名 ✓"
-          if node scripts/gen.mjs --prompt "x" --size 1024x1024 --dry-run 2>&1 | grep -q '只接受'; then
+          # ⚠️ 重要坑：GitHub Actions 用 `bash -e -o pipefail` 执行。
+          # 这里要检查的失败用例本身就以非 0 退出（node 退出码 1），
+          # 如果写成 `if node ... | grep -q '只接受'; then`，
+          # pipefail 会让整条管道取到 node 的失败码，**即使 grep 匹配成功也走 else**。
+          # 所以必须用命令替换把输出取出来，不让「预期失败的命令」直接进管道。
+          # （这个坑在本机不开 pipefail 时永远复现不出来。）
+
+          ar_out=$(node scripts/gen.mjs --prompt "x" --ar 16:9 --dry-run 2>&1 || true)
+          if printf '%s' "$ar_out" | grep -q '16:9'; then
+            echo "--ar 别名归一 ✓"
+          else
+            printf '%s\n' "$ar_out"
+            echo "::error::--ar 别名未生效"
+            exit 1
+          fi
+
+          size_out=$(node scripts/gen.mjs --prompt "x" --size 1024x1024 --dry-run 2>&1 || true)
+          if printf '%s' "$size_out" | grep -q '只接受'; then
             echo "像素值被正确拒绝 ✓"
           else
+            echo "----- CLI 实际输出 -----"
+            printf '%s\n' "$size_out"
+            echo "------------------------"
             echo "::error::--size 传像素值应当报错但没报"
             exit 1
           fi
