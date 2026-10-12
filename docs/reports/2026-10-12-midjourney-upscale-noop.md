@@ -14,8 +14,9 @@
 but the resulting image is **byte-for-byte identical to the source tile**, with the **same resolution**.
 The upscale is not performed; only the charge is.
 
-Reproduced **3 times** across two Midjourney versions and both documented parameter styles
-(`index` auto-matching and explicit `custom_id`).
+Reproduced **4 times** across two Midjourney versions, both documented parameter styles
+(`index` auto-matching and explicit `custom_id`), and additionally detected programmatically
+(the bundled `--verify` check flags it and exits with code 3).
 
 ---
 
@@ -88,13 +89,31 @@ sha256sum tile1.png upscaled.png
 | 1 | v8.2, 9:16, `task_01M4Q5GCTRNAHY7X4DDZ42EVY7` | `{"task_id":"...","index":4}` | `task_01M4Q5V0A74QK67M3R0J9Q8T1B` | $0.05504 | 816×1456, `SHA256 1D4F752F799014A0EAAB46D9C001AA32ADAAD816DFD5EDC582782E3795E9AC72` | 816×1456, same SHA256 | **YES** |
 | 2 | same imagine | `{"task_id":"...","custom_id":"MJ::JOB::upsample::4::6acc604e08e635c2f32316f0"}` | `task_01M4Q5XXX3NRXDYES82M62FSS1` | $0.05504 | (above) | 816×1456, same SHA256 | **YES** |
 | 3 | **v6.1, 1:1**, `task_01M4Q61J33TJCNPZQ1JKNFGCZ3` | `{"task_id":"...","index":1}` | `task_01M4Q65WTTWFDHTPE1HFMT0VT5` | $0.05504 | 1024×1024, `SHA256 308400F4E594F76B2F8C8792...` | 1024×1024, same SHA256 | **YES** |
+| 4 | v6.1, 1:1, same imagine | `{"task_id":"...","index":1}` (via this tool) | `task_01M4QEME2T2RG6XE6PC50344ZQ` | $0.05504 | 1024×1024 (4 tiles fetched & hashed) | matches source tile 1 byte-for-byte | **YES** |
+
+Run 4 was performed through this project's own client, which downloads every source tile,
+hashes it, and compares against the produced asset. Its machine-readable verdict:
+
+```json
+{ "action": "upscale", "status": "completed", "cost_usd": 0.05504,
+  "dimensions": ["1024x1024"],
+  "verify": { "sources": 4, "noop": 1, "resolution_increased": false } }
+```
+
+and it exits with **code 3**, so a caller/CI can fail fast instead of silently paying again:
+
+```
+⚠ 检出「付费空操作」：输出与源图逐字节完全相同，平台没有真的执行这个动作。
+  相同的源图数: 1 / 1 张输出
+  分辨率是否变大: 否
+```
 
 Every run returned `action=UPSCALE` and `status=SUCCESS` / `completed`.
 
 In run 3 the upscaled output was hashed against **all four** source tiles — it matched tile 1 exactly
 and none of the others, confirming the service re-served the requested source file.
 
-**Total billed for these three no-op calls: $0.16512.**
+**Total billed for these four no-op calls: $0.22016.**
 
 ### Raw responses (run 1)
 
@@ -162,7 +181,7 @@ Requesting a review of `midjourney@upscale` pricing/refund handling for affected
 ## Request
 
 * Please confirm whether this is a known/reported issue.
-* Please advise whether the three affected calls ($0.16512) are eligible for refund/credit.
+* Please advise whether the four affected calls (**$0.22016**) are eligible for refund or credit.
 * Please confirm whether the other follow-up actions
   (`variation`, `high-variation`, `low-variation`, `reroll`, `zoom`, `pan`, `inpaint`)
   are verified working, or whether they share the same defect — we have **not** tested them
