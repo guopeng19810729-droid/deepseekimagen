@@ -76,6 +76,11 @@ node <skill-base-dir>/scripts/gen.mjs --prompt-file ./prompt.txt --ar 16:9 --jso
 `z-image-turbo` / `wan*` / `flux*` / `qwen-image-2.0`。
 用户明确要时才用（`--models` 里带 `本地可跑` 标记的就是这类）。
 
+> ⚠️ **模型 id 会改名**。这个平台在 2026-10-12 前后重构过一轮命名
+> （`nano-banana-*-ext` → `gemini-nano-banana-2.1-*`、`flux-2` → `flux-2-flex` 等），
+> 硬编码旧 id 会直接 400。**动手前先跑 `--models --live` 核对一眼**；
+> 标「价格未知」的模型说明我还没拿到它的价格，费用上限保护对它失效，别盲用。
+
 ## 输出与台账
 
 - **图片**：`config.output_dir`，默认按日期分目录：`<output_dir>/2026-10-12/<时间>-<slug>-<hash>-01.png`

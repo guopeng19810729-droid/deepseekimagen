@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { loadConfig, requireApiKey, skillRoot } from '../src/config.mjs';
 import { Apimart, ApimartError } from '../src/apimart.mjs';
-import { DEFAULT_MODEL, MODELS, estimateUsd, isLocalAlternative, listModels, normalizeRatio, resolveModel } from '../src/models.mjs';
+import { DEFAULT_MODEL, MODELS, compareRegistry, estimateUsd, isLocalAlternative, listModels, normalizeRatio, resolveModel } from '../src/models.mjs';
 import { record, summarize } from '../src/ledger.mjs';
 import { CliError, c, die, ensureDir, fmtUsd, imageSize, log, maskKey, sha256Buf, shortHash, slugify, tsCompact, warn } from '../src/util.mjs';
 import { parseCliArgs } from '../src/args.mjs';
@@ -38,6 +38,8 @@ async function main() {
   const cfg = loadConfig({ configPath: argv.config });
 
   if (argv.check) return doCheck(argv, cfg);
+  // 注意顺序：--models --live 必须放在普通 --models 之前，否则会被它先截住
+  if (argv.models && argv.live) return doModelsLive(argv, cfg);
   if (argv.models) return doModels(argv, cfg);
   if (argv.ledger) return doLedger(argv, cfg);
   if (argv.action) return doAction(argv, cfg);
@@ -114,7 +116,9 @@ function doModels(argv, cfg) {
   log(`  ${'模型'.padEnd(24)} ${'参考价'.padEnd(13)} ${'尺寸参数'.padEnd(16)} 说明`);
   log('  ' + '─'.repeat(112));
   for (const m of listModels()) {
-    const price = m.pricing === 'token' ? '按Token计' : m.usd != null ? `${fmtUsd(m.usd)}/${m.unit}` : '—';
+    const price = m.pricing === 'token' ? '按Token计'
+      : m.usd != null ? `${fmtUsd(m.usd)}/${m.unit}`
+      : c.yellow('价格未知');
     const sizes = m.ratios === null ? '不支持size' : m.ratios.includes('auto') ? '比例(auto+10档)' : m.ratios.join('/');
     const tags = [];
     if (m.id === want) tags.push('[默认]');
@@ -126,6 +130,66 @@ function doModels(argv, cfg) {
   log(c.dim('惯例：说"生图"用默认模型；明确说 midjourney / MJ 才走 Midjourney 通道。'));
   log(c.dim('尺寸一律用比例（1:1 / 16:9 / 9:16 ...）；传像素值如 1024x1024 会被 API 拒绝。'));
   return 0;
+}
+
+/**
+ * --models --live：把本地价格表与平台 /models 实际返回做对比，检查清单是否已过期。
+ * 平台的模型清单接口**不提供价格**，所以 src/models.mjs 的价格表是手工维护的、会随时间过期，
+ * 这个命令就是用来发现过期的。
+ * 退出码：0 = 一致；4 = 发现漂移（便于 CI 或定时任务报警）。
+ */
+async function doModelsLive(argv, cfg) {
+  let key;
+  try {
+    key = requireApiKey(cfg);
+  } catch (e) {
+    die(e.message);
+  }
+
+  const api = new Apimart(clientOpts(argv, cfg, key));
+  log(c.bold('清单新鲜度检查：本地价格表 vs 平台 /models'));
+
+  let platform;
+  try {
+    const j = await api.listModels();
+    platform = (j?.data ?? []).map((m) => m?.id).filter(Boolean);
+  } catch (e) {
+    die(`拉取平台模型列表失败：${e.message}`);
+  }
+  if (!platform.length) die('平台 /models 返回空列表，无法比对（不据此判定清单过期）。');
+
+  const r = compareRegistry(platform);
+  log(`  平台模型总数 : ${r.platformCount}`);
+  log(`  本地清单条数 : ${r.localCount}`);
+  log('');
+
+  if (r.missingOnPlatform.length) {
+    log(c.yellow(`  ⚠ 清单里有、平台已没有（${r.missingOnPlatform.length} 个）—— 可能已下线或改名，请核对：`));
+    for (const id of r.missingOnPlatform) {
+      const m = MODELS[id];
+      log(`      ${id}  ${m.usd != null ? fmtUsd(m.usd) : '按Token计'}  ${m.note ?? ''}`);
+    }
+  } else {
+    log(c.green('  ✓ 清单里的模型平台都还在'));
+  }
+  log('');
+
+  if (r.notInRegistry.length) {
+    // 平台 /models 含全部模态（LLM / 视频 / 音频…），所以这个方向绝大多数不是生图模型
+    if (argv.all) {
+      log(c.dim(`  平台有、清单未收录（${r.notInRegistry.length} 个；多为非生图模型，仅供参考）：`));
+      for (const id of r.notInRegistry) log(c.dim(`      ${id}`));
+    } else {
+      log(c.dim(`  平台另有 ${r.notInRegistry.length} 个模型未收录进清单（含大量非生图模型；加 --all 可列出）`));
+    }
+  }
+
+  const drift = r.missingOnPlatform.length > 0;
+  log('');
+  log(drift
+    ? c.yellow('  → 发现漂移，建议更新 src/models.mjs 的价格表（退出码 4）')
+    : c.green('  → 清单与平台一致'));
+  return drift ? 4 : 0;
 }
 
 function doLedger(argv, cfg) {
@@ -178,6 +242,9 @@ async function doGenerate(argv, cfg) {
   }
   if (spec.pricing === 'token') {
     warn(`模型 ${model} 按 Token 计费，费用无法预估，可能显著高于按张模型。`);
+  } else if (spec.pricing === 'unknown') {
+    warn(`模型 ${model} 的价格尚未收录进清单，无法预估费用 —— **单次费用上限保护对它失效**。\n` +
+         '        建议先 --dry-run 或先跑一次小任务，看台账里记录的实际 cost，再把价格补进 src/models.mjs。');
   }
 
   if (argv['dry-run']) {
@@ -501,6 +568,7 @@ ${c.bold('用法')}
   dimg --prompt-file prompt.txt [选项]        ← 中文提示词推荐（避开命令行编码问题）
   dimg --check                                自检：配置/密钥/连通/目录可写
   dimg --models                               列出可用模型与参考价
+  dimg --models --live [--all]                对比平台实际模型，检查价格表是否过期（漂移则退出码 4）
   dimg --ledger [--tail N]                    查看台账汇总
 
 ${c.bold('常用选项')}

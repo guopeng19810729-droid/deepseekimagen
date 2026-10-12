@@ -4,6 +4,10 @@
 **1 credit = $0.10**；黄金价 ≈ 官方价 × 80%。
 实际花费以任务返回的 `cost` 字段为准。
 
+> ⚠️ **价格表会过期。** 平台改名很快：2026-10-12 用 `--models --live` 复核时，
+> 10-10 抄的表里已有 **9 个 id 失效**（详见文末「模型 id 漂移记录」）。
+> 模型是否存在请以 `node scripts/gen.mjs --models --live` 为准；价格请以任务返回的 `cost` 为准。
+
 > 抓取时的账户：黄金档，余额约 $9.5。
 
 ---
@@ -168,3 +172,40 @@
 ---
 
 *数据来源：apib.ai 定价页（2026-10-10，黄金档）+ 本工具对同一提示词的实测扣费交叉验证。*
+
+---
+
+## 六、模型 id 漂移记录（2026-10-12 复核）
+
+用 `node scripts/gen.mjs --models --live` 对比平台实际清单后发现：
+**10-10 抄的表，两天内已有 9 个 id 失效。**
+
+| 旧 id（已失效） | 平台现状 |
+|---|---|
+| `nano-banana-2-lite-ext` · `nano-banana-ext` · `nano-banana-2-ext` · `nano-banana-pro-ext` | 整族改名为 **`gemini-nano-banana-2.1-ext`**（加了 `gemini-` 前缀） |
+| `nano-banana-pro` | 已不存在（Gemini 图像模型改名为 `gemini-3-pro-image-preview` 等） |
+| `grok-imagine-1.5-ext` | 改为 `grok-imagine-1.5-apimart`；另有新的 `grok-imagine-2.0-ext` |
+| `gpt-image-2-ext` | 已不存在（现有 `gpt-image-2` / `gpt-image-2.5-ext`） |
+| `flux-2` | 改为 `flux-2-flex`（同族还新增 `flux-2-pro` / `flux-2-max`） |
+| `flux-kontext` | 改为 `flux-kontext-max`（`flux-kontext-pro` 仍在） |
+
+**平台新增、清单里当时没有的生图模型**（现已加入清单并标注 `价格未知`）：
+
+`gpt-image-2.5-flare` · `gpt-image-2.5-sunburst` · `gemini-nano-banana-2.1-ext` ·
+`gemini-3-pro-image-preview` · `gemini-3.1-flash-image-preview` · `gemini-3.1-flash-lite-image` ·
+`grok-imagine-1.5-apimart` · `grok-imagine-2.0-ext` · `grok-imagine-image-2.0` ·
+`flux-2-flex` · `flux-kontext-max` · `qwen-image-2.0` · `qwen-image-2.0-pro`
+
+**这些新模型的价格尚未收录**（定价页需要重新抓取）。它们被**显式**标为 `pricing: 'unknown'`：
+
+* `--models` 里显示 **「价格未知」**
+* 生成时给出明确告警：**单次费用上限保护对它失效**
+* `estimateUsd()` 返回 `null`
+
+这是刻意设计 —— 有单测钉住「`usd` 为 null 时必须显式标注 `pricing`」这个不变量，
+防止出现「清单看着齐全、费用闸门其实静默失效」的漏洞。
+
+**怎么补价格**：重新保存一次平台定价页（登录后 `Ctrl+S` 存成 HTML），我就能解析出准确价格填进清单。
+
+**一般性教训**：这个平台的模型 id 是**会改名**的，而改名对调用方是硬失败（400/404）。
+所以**任何长期运行的东西都不该硬编码模型 id**，至少要用 `--models --live` 定期核对。
