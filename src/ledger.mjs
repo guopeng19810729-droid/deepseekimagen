@@ -1,7 +1,7 @@
 // 台账：每次生成记一行 CSV + 每张图一个 sidecar JSON
 // 目的：三个月后还能知道 a3f9.png 是哪个提示词、哪个模型、花了多少钱生成的
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { ensureDir, shortHash, tsCompact } from './util.mjs';
 
 const HEADER = [
@@ -62,9 +62,16 @@ export function record(ledgerDir, entry, { sidecarExtra = {} } = {}) {
   const sideName = `${tsCompact()}-${sha}.json`;
   const sidePath = join(sidecarDir, sideName);
   writeFileSync(sidePath, JSON.stringify(meta, null, 2), 'utf8');
-  try {
-    if (entry.file) writeFileSync(`${entry.file}.json`, JSON.stringify(meta, null, 2), 'utf8');
-  } catch { /* 图目录不可写就算了，台账还在 */ }
+
+  // 在图片旁再写一份 sidecar，让图片目录自描述。
+  // 教训：只在 file 是**绝对路径**时才写。曾经这里只判断 `if (entry.file)`，
+  // 于是调用方传相对路径（例如单测里的 'f1'）时会按 CWD 解析，
+  // 把 f1.json 写进当前工作目录 —— 结果在仓库根目录留下了 f1/f2/f3.json 并被提交。
+  if (entry.file && isAbsolute(String(entry.file))) {
+    try {
+      writeFileSync(`${entry.file}.json`, JSON.stringify(meta, null, 2), 'utf8');
+    } catch { /* 图目录不可写就算了，台账还在 */ }
+  }
 
   return { csv, sidecar: sidePath, sha };
 }

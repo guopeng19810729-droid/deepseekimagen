@@ -1,7 +1,7 @@
 // 台账测试：一次生成一行、失败也留痕、汇总正确
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ledgerPaths, readLedger, record, summarize } from '../src/ledger.mjs';
@@ -95,5 +95,40 @@ test('空台账不报错', () => {
     const s = summarize(t.dir);
     assert.equal(s.rows.length, 0);
     assert.equal(s.total, 0);
+  } finally { t.cleanup(); }
+});
+
+// ── 回归：曾经因为只判断 `if (entry.file)`，相对路径会被按 CWD 解析，
+//    把 f1.json 之类写进仓库根目录并被 git 提交。────────────────────
+test('相对路径的 file 不会把 sidecar 写进当前工作目录', () => {
+  const t = tmp();
+  const probe = join(process.cwd(), 'f1.json');
+  rmSync(probe, { force: true });
+  try {
+    record(t.dir, {
+      model: 'a', ratio: '1:1', images: 1, costUsd: 0.01, credits: null,
+      taskId: 't1', format: 'png', bytes: 1, file: 'f1', prompt: 'p1',
+    });
+    assert.equal(existsSync(probe), false, '相对路径不应在当前工作目录留下 sidecar');
+  } finally {
+    rmSync(probe, { force: true });
+    t.cleanup();
+  }
+});
+
+test('绝对路径的 file 会在图片旁写 sidecar（图片目录自描述）', () => {
+  const t = tmp();
+  try {
+    const outDir = join(t.dir, 'out');
+    mkdirSync(outDir, { recursive: true });
+    const img = join(outDir, 'x.png');
+    writeFileSync(img, 'fake');
+    record(t.dir, {
+      model: 'a', ratio: '1:1', images: 1, costUsd: 0.01, credits: null,
+      taskId: 't2', format: 'png', bytes: 1, file: img, prompt: '完整提示词',
+    });
+    assert.ok(existsSync(`${img}.json`), '绝对路径应在图旁写 sidecar');
+    const meta = JSON.parse(readFileSync(`${img}.json`, 'utf8'));
+    assert.equal(meta.prompt, '完整提示词');
   } finally { t.cleanup(); }
 });
