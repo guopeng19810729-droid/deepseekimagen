@@ -80,6 +80,36 @@ export class Apimart {
     return this.#req('/models');
   }
 
+  /**
+   * 提交 Midjourney 后续动作。
+   * action: upscale | variation | high-variation | low-variation | reroll
+   *         | zoom | pan | inpaint | modal | edits | blend | describe | remix-strong | remix-subtle | video
+   * body:   至少含 task_id；按动作补 index / direction / zoom_ratio / custom_id / prompt / image_url(s) 等
+   */
+  async submitAction(action, body) {
+    const json = await this.#req(`/midjourney/generations/${encodeURIComponent(action)}`, { method: 'POST', body });
+    const item = json?.data?.[0] || json?.data || json;
+    const taskId = item?.task_id || item?.id;
+    if (!taskId) throw new ApimartError(`动作 ${action} 提交后没拿到 task_id：${JSON.stringify(json).slice(0, 300)}`);
+    return { taskId, raw: json };
+  }
+
+  /**
+   * 取某个已完成的 MJ 任务的源图信息 —— 用于对后续动作做「输出 vs 输入」等价性校验。
+   * 注意：/v1/midjourney/{id} 的字段在**顶层**，不像 /v1/tasks/{id} 那样包在 data 里。
+   */
+  async sourceImages(taskId) {
+    const mj = await this.#req(`/midjourney/${encodeURIComponent(taskId)}`);
+    const d = mj?.data ?? mj;
+    return {
+      urls: Array.isArray(d?.image_urls) ? d.image_urls : [],
+      grid: d?.grid_image_url ?? null,
+      promptEn: d?.prompt_en ?? null,
+      action: d?.action ?? null,
+      status: d?.status ?? null,
+    };
+  }
+
   async getTask(taskId) {
     return this.#req(`/tasks/${encodeURIComponent(taskId)}`);
   }

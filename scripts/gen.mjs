@@ -13,7 +13,7 @@ import { loadConfig, requireApiKey, skillRoot } from '../src/config.mjs';
 import { Apimart, ApimartError } from '../src/apimart.mjs';
 import { DEFAULT_MODEL, MODELS, estimateUsd, isLocalAlternative, listModels, normalizeRatio, resolveModel } from '../src/models.mjs';
 import { record, summarize } from '../src/ledger.mjs';
-import { CliError, c, die, ensureDir, fmtUsd, log, maskKey, parseArgs, shortHash, slugify, tsCompact, warn } from '../src/util.mjs';
+import { CliError, c, die, ensureDir, fmtUsd, imageSize, log, maskKey, parseArgs, sha256Buf, shortHash, slugify, tsCompact, warn } from '../src/util.mjs';
 
 main().then(
   (code) => { process.exitCode = code ?? 0; },
@@ -38,6 +38,7 @@ async function main() {
   if (argv.check) return doCheck(argv, cfg);
   if (argv.models) return doModels(argv, cfg);
   if (argv.ledger) return doLedger(argv, cfg);
+  if (argv.action) return doAction(argv, cfg);
   return doGenerate(argv, cfg);
 }
 
@@ -211,8 +212,21 @@ async function doGenerate(argv, cfg) {
   process.stderr.write('\r' + ' '.repeat(72) + '\r');
 
   if (!res.urls.length) {
-    const detail = JSON.stringify(res.data?.error ?? res.data ?? {}).slice(0, 400);
-    die(`任务 ${res.status}，没有拿到图片 URL。原始：${detail}`);
+    const detail = res.data?.error ?? res.data ?? {};
+    // 失败也要留痕（内容安全审核被拒时提交是 200，错误只在轮询阶段暴露）
+    record(cfg.ledger_dir, {
+      model,
+      ratio,
+      images: 0,
+      costUsd: res.cost ?? 0,
+      credits: res.credits ?? null,
+      taskId: submitted.taskId,
+      format: '',
+      bytes: 0,
+      file: '',
+      prompt,
+    }, { sidecarExtra: { failed: true, status: res.status, detail } });
+    die(`任务 ${res.status}，没有拿到图片 URL。原始：${JSON.stringify(detail).slice(0, 400)}`);
   }
 
   const dayDir = join(cfg.output_dir, new Date().toISOString().slice(0, 10));
@@ -268,6 +282,166 @@ async function doGenerate(argv, cfg) {
     log(`  ${c.bold('花费')} ${res.cost != null ? fmtUsd(res.cost) : '未知'}${res.credits != null ? c.dim(` (${res.credits} credits)`) : ''}`);
     log(`  ${c.bold('台账')} ${join(cfg.ledger_dir, 'ledger.csv')}`);
     if (res.urls.length > 1) log(c.dim(`  该模型一次出了 ${res.urls.length} 张，已全部保存。`));
+  }
+  return 0;
+}
+
+/**
+ * Midjourney 后续动作（upscale / variation / reroll / zoom / pan / inpaint ...）
+ * 默认开启 --verify：把输出与源图做哈希+分辨率比对。
+ * 若输出与某张源图**逐字节相同**，判定为「付费空操作」，打印告警并返回退出码 3。
+ */
+async function doAction(argv, cfg) {
+  const action = String(argv.action).trim();
+  const srcTask = argv.task ? String(argv.task).trim() : '';
+  if (!srcTask) {
+    die('--action 需要配合 --task <源任务 id>：源任务就是那次 imagine 返回的 task_id。');
+  }
+
+  // 已知价格的动作用来做费用闸门；未知价格为 null（不拦，但会提示）
+  const KNOWN_ACTION_USD = { upscale: 0.05504 };
+  const known = Object.prototype.hasOwnProperty.call(KNOWN_ACTION_USD, action);
+  const est = known ? KNOWN_ACTION_USD[action] : null;
+  if (est != null && est > cfg.max_cost_usd_per_request && !argv.force) {
+    die(`动作 ${action} 预估 ${fmtUsd(est)} 超过上限 ${fmtUsd(cfg.max_cost_usd_per_request)}。确认要跑请加 --force。`);
+  }
+
+  const body = { task_id: srcTask };
+  if (argv.index !== undefined) body.index = Number(argv.index);
+  if (argv.direction) body.direction = String(argv.direction);
+  if (argv['zoom-ratio'] !== undefined) body.zoom_ratio = Number(argv['zoom-ratio']);
+  if (argv['custom-id']) body.custom_id = String(argv['custom-id']);
+  if (argv.prompt || argv['prompt-file']) body.prompt = readPrompt(argv);
+  if (argv['image-url']) body.image_url = String(argv['image-url']);
+
+  const wantVerify = !argv['no-verify']; // 动作默认开启校验（校验本身免费）
+
+  if (argv['dry-run']) {
+    log(c.bold(`--dry-run 预演：动作 ${action}`));
+    log(`  源任务 : ${srcTask}`);
+    log(`  请求体 : ${JSON.stringify(body)}`);
+    log(`  预估   : ${est == null ? c.yellow('平台未标价，未知') : fmtUsd(est)}`);
+    log(`  校验   : ${wantVerify ? '开启（哈希+分辨率比对）' : '已用 --no-verify 关闭'}`);
+    return 0;
+  }
+
+  const key = requireApiKey(cfg);
+  const api = new Apimart(clientOpts(argv, cfg, key));
+  if (!known) warn(`平台未给动作 ${action} 标价，实际费用以任务返回的 cost 为准。`);
+
+  process.stderr.write(`  提交动作 ${action} … `);
+  let submitted;
+  try {
+    submitted = await api.submitAction(action, body);
+  } catch (e) {
+    process.stderr.write('\n');
+    die(`提交失败：${e.message}`);
+  }
+  process.stderr.write(`task_id=${submitted.taskId}\n`);
+
+  const res = await api.poll(submitted.taskId, {
+    onTick: ({ status, progress, elapsedMs }) => {
+      process.stderr.write(`\r  ${c.dim(`状态 ${status} 进度 ${progress ?? '?'} ${Math.round(elapsedMs / 1000)}s`)}    `);
+    },
+  });
+  process.stderr.write('\r' + ' '.repeat(72) + '\r');
+
+  if (!res.urls.length) {
+    const detail = res.data?.error ?? res.data ?? {};
+    record(cfg.ledger_dir, {
+      model: `midjourney@${action}`,
+      ratio: null,
+      images: 0,
+      costUsd: res.cost ?? 0,
+      credits: res.credits ?? null,
+      taskId: submitted.taskId,
+      format: '',
+      bytes: 0,
+      file: '',
+      prompt: `[${action}] source=${srcTask}`,
+    }, { sidecarExtra: { failed: true, action, status: res.status, detail } });
+    die(`动作 ${action} 任务 ${res.status}，没有拿到图片 URL。原始：${JSON.stringify(detail).slice(0, 400)}`);
+  }
+
+  // 下载输出（同时记录哈希与分辨率，供校验用）
+  const dayDir = join(cfg.output_dir, new Date().toISOString().slice(0, 10));
+  ensureDir(dayDir);
+  const saved = [];
+  for (let i = 0; i < res.urls.length; i++) {
+    const { buf, format } = await api.download(res.urls[i]);
+    const idx = res.urls.length > 1 ? String(i + 1).padStart(2, '0') : '01';
+    const file = join(dayDir, `${tsCompact()}-mj-${action}-${idx}.${format}`);
+    writeFileSync(file, buf);
+    const dim = imageSize(buf);
+    saved.push({ file, format, bytes: buf.length, sha: sha256Buf(buf), w: dim.w, h: dim.h });
+  }
+
+  // ── 校验：输出 vs 源图 ────────────────────────────────────
+  let verdict = null;
+  if (wantVerify) {
+    try {
+      const src = await api.sourceImages(srcTask);
+      const sources = [];
+      for (const u of src.urls) {
+        const { buf } = await api.download(u);
+        sources.push({ sha: sha256Buf(buf), ...imageSize(buf) });
+      }
+      const noop = saved.filter((o) => sources.some((s) => s.sha === o.sha));
+      const grew = saved.some((o) => sources.some((s) => s.w && o.w && o.w * o.h > s.w * s.h));
+      verdict = { sources, noop, grew };
+    } catch (e) {
+      warn(`校验未完成（${e.message}）—— 这不代表动作有效，请自行比对。`);
+    }
+  }
+
+  const { sidecar } = record(cfg.ledger_dir, {
+    model: `midjourney@${action}`,
+    ratio: null,
+    images: saved.length,
+    costUsd: res.cost,
+    credits: res.credits,
+    taskId: submitted.taskId,
+    format: saved[0]?.format,
+    bytes: saved.reduce((a, s) => a + s.bytes, 0),
+    file: saved[0]?.file,
+    prompt: `[${action}] source=${srcTask}`,
+  }, { sidecarExtra: { action, source_task: srcTask, request: body, urls: res.urls, verify: verdict ? { sources: verdict.sources.length, noop: verdict.noop.length, resolution_increased: verdict.grew } : null } });
+
+  const result = {
+    ok: true,
+    action,
+    source_task: srcTask,
+    task_id: submitted.taskId,
+    status: res.status,
+    cost_usd: res.cost,
+    files: saved.map((s) => s.file),
+    dimensions: saved.map((s) => (s.w ? `${s.w}x${s.h}` : null)),
+    verify: verdict ? { sources: verdict.sources.length, noop: verdict.noop.length, resolution_increased: verdict.grew } : null,
+    ledger: join(cfg.ledger_dir, 'ledger.csv'),
+    sidecar,
+  };
+
+  if (argv.json) {
+    log(JSON.stringify(result, null, 2));
+  } else {
+    log('');
+    log(`${c.green('完成')}  动作 ${action}  ${res.cost != null ? fmtUsd(res.cost) : '费用未知'}`);
+    for (const s of saved) {
+      log(`  ${c.bold('文件')} ${s.file}  ${c.dim(`(${s.w ? `${s.w}x${s.h}, ` : ''}${s.format}, ${(s.bytes / 1024).toFixed(1)} KB)`)}`);
+    }
+  }
+
+  // ── 判定为空操作：明确告警 + 非零退出码 ──────────────────
+  if (verdict && verdict.noop.length) {
+    log('');
+    log(c.red('⚠ 检出「付费空操作」：输出与源图逐字节完全相同，平台没有真的执行这个动作。'));
+    log(`  相同的源图数: ${verdict.noop.length} / ${saved.length} 张输出`);
+    log(`  分辨率是否变大: ${verdict.grew ? '是' : c.red('否')}`);
+    log(c.dim('  建议：停止对该动作继续付费；改用本地放大器等替代方案；并保留本条台账作为证据。'));
+    return 3;
+  }
+  if (verdict && !verdict.grew && verdict.sources.length) {
+    warn('输出与源图哈希不同（动作确实产生了新文件），但分辨率没有变大 —— 若你要的是放大，请确认是否符合预期。');
   }
   return 0;
 }
@@ -331,10 +505,22 @@ ${c.bold('常用选项')}
   --json            以 JSON 输出结果（便于程序解析）
   --config <路径>   指定配置文件
 
+${c.bold('Midjourney 后续动作（用 imagine 的 task_id 做源）')}
+  dimg --action <动作> --task <源task_id> [--index N] [--custom-id ID] [--no-verify]
+  动作: upscale | variation | high-variation | low-variation | reroll | zoom | pan | inpaint
+        | edits | blend | describe | remix-strong | remix-subtle | video
+  参数: --index 1-4（U/V 目标）  --direction left|right|up|down（pan）
+        --zoom-ratio N（zoom）    --custom-id 'MJ::JOB::...'（绕过自动匹配）
+  ${c.bold('--verify')} 默认开启：把输出与源图做哈希+分辨率比对。
+          检出「输出与源图逐字节相同」时告警并返回退出码 3（付费空操作）。
+          用 --no-verify 关闭。
+
 ${c.bold('示例')}
   dimg --prompt-file p.txt --ratio 16:9
   dimg --prompt "a red apple" --ratio 1:1 --dry-run
   dimg --prompt "概念海报" --model midjourney --ratio 9:16
+  dimg --action upscale --task task_01M4Q5GCTRNAHY7X4DDZ42EVY7 --index 4
+  dimg --action upscale --task task_xxx --index 4 --dry-run
   dimg --ledger --tail 5
 `);
 }

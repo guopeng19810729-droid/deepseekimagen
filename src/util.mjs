@@ -67,6 +67,57 @@ export function ensureDir(p) {
   return p;
 }
 
+/** buffer 的 SHA256（大写十六进制），用于「输出 vs 输入」等价性校验 */
+export function sha256Buf(buf) {
+  return createHash('sha256').update(buf).digest('hex').toUpperCase();
+}
+
+/**
+ * 从图片字节里读宽高（不依赖任何图像库）。
+ * PNG 直接读 IHDR；JPEG 扫 SOF 段；WebP 支持 VP8X / VP8L / VP8。
+ * 返回 { w, h }，读不出时为 { w: null, h: null }。
+ */
+export function imageSize(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  const fmt = detectFormat(b);
+  try {
+    if (fmt === 'png') return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
+    if (fmt === 'jpg') {
+      let i = 2;
+      while (i < b.length - 9) {
+        if (b[i] !== 0xff) { i++; continue; }
+        const marker = b[i + 1];
+        const len = b.readUInt16BE(i + 2);
+        // SOF0..SOF15（排除 DHT=0xC4 / JPG=0xC8 / DAC=0xCC）
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { w: b.readUInt16BE(i + 7), h: b.readUInt16BE(i + 5) };
+        }
+        i += 2 + len;
+      }
+      return { w: null, h: null };
+    }
+    if (fmt === 'webp') {
+      const fourcc = b.toString('ascii', 12, 16);
+      if (fourcc === 'VP8X') {
+        const w = 1 + (b[24] | (b[25] << 8) | (b[26] << 16));
+        const h = 1 + (b[27] | (b[28] << 8) | (b[29] << 16));
+        return { w, h };
+      }
+      if (fourcc === 'VP8L') {
+        const bits = b.readUInt32LE(21);
+        return { w: (bits & 0x3fff) + 1, h: ((bits >> 14) & 0x3fff) + 1 };
+      }
+      if (fourcc === 'VP8 ') {
+        return { w: b.readUInt16LE(26) & 0x3fff, h: b.readUInt16LE(28) & 0x3fff };
+      }
+      return { w: null, h: null };
+    }
+  } catch {
+    return { w: null, h: null };
+  }
+  return { w: null, h: null };
+}
+
 export function readJsonSafe(p) {
   try {
     return JSON.parse(readFileSync(p, 'utf8'));
